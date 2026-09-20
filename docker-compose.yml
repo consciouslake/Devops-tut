@@ -1,0 +1,42 @@
+# AzureOps Copilot — local dev stack (Week 1, Days 1-3).
+# `docker compose up -d --build` after copying backend/.env.example -> backend/.env
+#
+# Qdrant runs single-node here; becomes a 3-node cluster on Azure in Week 4
+# (see PLAN.md and vector-store/README.md) — this compose file is NOT what
+# runs in production, it's the fast local loop.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    ports:
+      - '127.0.0.1:6333:6333'
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '127.0.0.1:6379:6379'
+
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      QDRANT_HOST: qdrant
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - qdrant
+      - redis
+    ports:
+      - '8000:8000'
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - '5173:80'
+
+volumes:
+  qdrant_storage:

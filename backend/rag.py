@@ -16,9 +16,12 @@ from config import settings
 
 genai.configure(api_key=settings.gemini_api_key)
 
-EMBEDDING_MODEL = "models/text-embedding-004"
+# text-embedding-004 was retired; gemini-embedding-001 is the current model.
+# It defaults to 3072-dim output but supports Matryoshka truncation via
+# output_dimensionality — pinned to 768 to keep the Qdrant collection small.
+EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM = 768
-CHAT_MODEL = "gemini-2.0-flash"
+CHAT_MODEL = "gemini-3.6-flash"
 
 _qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
 
@@ -45,7 +48,12 @@ def chunk_text(text: str, max_chars: int = 1500, overlap: int = 200) -> list[str
 
 
 def embed(text: str, task_type: str = "retrieval_document") -> list[float]:
-    result = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type=task_type)
+    result = genai.embed_content(
+        model=EMBEDDING_MODEL,
+        content=text,
+        task_type=task_type,
+        output_dimensionality=EMBEDDING_DIM,
+    )
     return result["embedding"]
 
 

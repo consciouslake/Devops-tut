@@ -1,7 +1,11 @@
+import logging
+
 from fastapi import FastAPI, WebSocket
 from pydantic import BaseModel
 
 import rag
+
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="AzureOps Copilot")
 
@@ -28,9 +32,13 @@ async def chat(ws: WebSocket):
     try:
         while True:
             query = await ws.receive_text()
-            context_chunks = rag.retrieve(query)
-            for token in rag.generate_answer(query, context_chunks):
-                await ws.send_text(token)
+            try:
+                context_chunks = rag.retrieve(query)
+                for token in rag.generate_answer(query, context_chunks):
+                    await ws.send_text(token)
+            except Exception:
+                logger.exception("chat generation failed")
+                await ws.send_text("[error] something went wrong generating a response")
             await ws.send_text("[[END]]")
     except Exception:
         await ws.close()

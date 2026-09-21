@@ -1826,13 +1826,113 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'monitoring-observability',
+    number: 10,
+    mono: 'MO',
+    title: 'Monitoring & Observability',
+    outcome: 'Detect, investigate, and explain production behavior without paying for it.',
+    chapters: [
+      {
+        id: 'cost-comparison-monitoring',
+        title: 'Paid vs. free: how cost-conscious teams actually do monitoring and logging',
+        concept:
+          "Before deploying anything, this module started with a real comparison, not an assumption. Azure's native monitoring stack — Azure Monitor, Managed Grafana, Log Analytics — is genuinely good, but nearly all of it is billed on ingested data volume or per-node/per-user pricing that scales with exactly the kind of experimentation this curriculum does. The verified alternative most cost-conscious teams actually run in production: the **PLG stack** — Prometheus (metrics), Loki (logs), Grafana (dashboards) — all open-source, all self-hostable on infrastructure you already pay for. On Module 8's existing k3s cluster, the entire stack costs zero additional dollars: no per-GB ingestion fee, no per-seat Grafana license, just the compute the 3 nodes already have. The trade-off is real too — no Azure-native SLA, no managed alert-routing integrations out of the box, and running it is now this project's own operational responsibility, the same trade made for Kubernetes itself in Module 8.",
+        whyDevops:
+          "Every team eventually hits the moment where a monitoring bill becomes a line item someone questions. The `kube-prometheus-stack` and `loki-stack` Helm charts used here are not toy tools — they're the same ones widely run in real production environments specifically because they avoid per-GB logging costs at meaningful scale. Knowing when self-hosted observability is the right call (a resourced team, already running Kubernetes, willing to own the operational burden) versus when a managed service is worth paying for (a small team, no spare ops capacity, needs a vendor SLA) is a real cost-architecture decision, not a preference.",
+        handsOn: [
+          {
+            label: 'The comparison this module was built on',
+            code: "# Metrics\n# Paid:  Azure Monitor (metrics) -- billed per metric + per alert rule\n# Free:  Prometheus -- self-hosted, pull-based scraping, $0 beyond compute already paid for\n\n# Logs\n# Paid:  Log Analytics / Azure Monitor Logs -- billed per GB ingested + per GB retained\n# Free:  Loki -- self-hosted, indexes labels not full text (this is WHY it's cheap to run), $0\n\n# Dashboards\n# Paid:  Azure Managed Grafana -- per-user/per-workspace pricing\n# Free:  Grafana OSS (self-hosted) -- functionally the same dashboarding engine, $0\n\n# Tracing (planned, not yet built this module)\n# Paid:  Application Insights -- billed per GB of trace data\n# Free:  Tempo / Jaeger (self-hosted) -- $0 beyond compute" },
+        ],
+        troubleshooting: [
+          'The real risk with self-hosted observability isn\'t cost, it\'s neglect — an unmonitored monitoring stack (no one watching Prometheus\'s own disk usage, or Loki\'s retention growing unbounded) becomes its own incident. This is the operational cost being traded for the dollar cost.',
+        ],
+        interview: [
+          'What\'s the actual cost driver in most cloud logging bills, and why does Loki\'s label-based indexing avoid it?',
+          'When would you recommend a managed observability service over a self-hosted PLG stack despite the cost difference?',
+        ],
+        azureConnection:
+          "This decision directly extends the same reasoning behind Module 8's self-managed k3s cluster: infrastructure already being paid for (the 3 k3s nodes) can absorb a genuinely production-grade observability stack at zero marginal cost, as long as the team is willing to own the operational responsibility a managed service would otherwise carry.",
+      },
+      {
+        id: 'deploying-plg-stack',
+        title: 'Deploying Prometheus, Loki, and Grafana onto the real k3s cluster',
+        concept:
+          "Both stacks were installed via their standard, widely-used Helm charts: `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager + kube-state-metrics + node-exporter, one chart) and `loki-stack` (Loki + Promtail, the log-shipping DaemonSet). Real Azure-specific friction hit immediately: commands were run via `az vm run-command invoke` (no direct SSH to the cluster nodes), which executes as `root` with `$HOME` completely unset — Helm stores its repo config under `$HOME/.config/helm`, so `helm repo add` succeeding in one invocation didn't persist to the next; `helm repo list` came back empty and `helm install` failed with `repo ... not found`. Fixed by explicitly `export HOME=/root` at the start of every script that touches Helm, and combining repo-add with install in a single invocation where the two needed to share state.",
+        whyDevops:
+          "This is a completely realistic remote-execution gotcha, not a Kubernetes concept — any automation tool that shells out to a fresh, non-interactive session (CI runners, `run-command` APIs, cron jobs) can hit the same silently-broken `$HOME` assumption. Tools that store state in dotfiles under the user's home directory need an explicit, verified home environment every time, not an inherited one.",
+        handsOn: [
+          {
+            label: 'Real install commands, both charts, on the k3s cluster',
+            code: 'export HOME=/root\nhelm repo add prometheus-community https://prometheus-community.github.io/helm-charts\nhelm repo add grafana https://grafana.github.io/helm-charts\nhelm repo update\n\nhelm install monitoring prometheus-community/kube-prometheus-stack \\\n  --namespace monitoring --create-namespace\n\nhelm install loki grafana/loki-stack \\\n  --namespace monitoring \\\n  --set grafana.enabled=false \\\n  --set promtail.enabled=true' },
+          {
+            label: 'Verified: all pods genuinely Running across all 3 nodes',
+            code: 'kubectl get pods -n monitoring\n# Prometheus, Grafana, Alertmanager, kube-state-metrics: 1 each\n# node-exporter: 3 (DaemonSet, one per node)\n# loki-0: 1 (StatefulSet)\n# loki-promtail: 3 (DaemonSet, one per node)' },
+        ],
+        troubleshooting: [
+          '`helm repo list` returning empty / `repo not found` on the very next `run-command` invocation → not a real Helm bug, `$HOME` was unset under the remote-execution shell, so config written to `/.config/helm` (or nowhere reliable) didn\'t persist. Confirmed via `whoami` + `echo HOME=$HOME` before assuming Helm itself was broken.',
+        ],
+        interview: [
+          'Why would a command that works interactively over SSH fail differently when run through a non-interactive remote-execution API?',
+          'What does `kube-prometheus-stack` bundle that you\'d otherwise have to assemble by hand from separate charts?',
+        ],
+        azureConnection:
+          "`az vm run-command invoke` was the only execution path available (no SSH configured to app-vm1/app-vm2 by design), the same constraint carried over from Module 8's entire cluster build — this chapter is the first time that constraint's `$HOME`-unset side effect actually broke something, rather than just being an inconvenience.",
+      },
+      {
+        id: 'grafana-datasource-conflict',
+        title: 'A real incident: wiring Loki into Grafana broke the rollout',
+        concept:
+          'Grafana auto-discovers datasources via ConfigMaps labeled `grafana_datasource: "1"`, watched by a sidecar container that writes them into `/etc/grafana/provisioning/datasources/`. A ConfigMap was created for Loki (`isDefault: false`, correctly avoiding conflict with Prometheus). The sidecar\'s live-reload API call failed with a 500, so the Grafana deployment was restarted to force it to reload provisioning files at pod startup instead — and the *new* pod immediately entered `CrashLoopBackOff` while the *old* pod correctly stayed `Running` (the same safe rolling-update behavior demonstrated in Module 8\'s rollout chapter). The real crash log: `"Only one datasource per organization can be marked as default"`. Listing every ConfigMap with that label turned up a third, unexpected one: `loki-loki-stack`, auto-created by the `loki-stack` Helm chart *itself* — despite `grafana.enabled=false` in the install values — and it set `isDefault: true` for its own Loki entry, directly conflicting with `kube-prometheus-stack`\'s own default-`true` Prometheus datasource ConfigMap.',
+        whyDevops:
+          "This is the exact kind of bug that only shows up when two independently-authored Helm charts both assume they own a shared piece of state (\"I'm allowed to set my datasource as default\") without any awareness of the other. `grafana.enabled=false` turned off the loki-stack chart's *Grafana deployment*, but not its *datasource ConfigMap generation* — a subtlety only visible by actually listing what got created, not by reading the values file and assuming.",
+        handsOn: [
+          { label: 'Diagnosing: which ConfigMap actually conflicts', code: "kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana\n# CrashLoopBackOff on the NEW pod, old pod still Running (2 pods, safe rollout)\n\nkubectl logs -n monitoring <crashing-pod> -c grafana\n# \"Datasource provisioning error: datasource.yaml config is invalid.\n#  Only one datasource per organization can be marked as default\"\n\nkubectl get configmap -n monitoring -l grafana_datasource=1\n# loki-datasource                                 (mine, isDefault: false)\n# loki-loki-stack                                 (chart's OWN, unexpected)\n# monitoring-kube-prometheus-grafana-datasource    (isDefault: true)\n\nkubectl get configmap -n monitoring loki-loki-stack -o jsonpath='{.data}'\n# confirmed: isDefault: true -- the actual conflict" },
+          { label: 'Fix: remove the redundant, conflicting ConfigMap', code: 'kubectl delete configmap -n monitoring loki-loki-stack\nkubectl delete pod -n monitoring -l app.kubernetes.io/name=grafana\nkubectl rollout status deployment monitoring-grafana -n monitoring\n# "successfully rolled out" -- single pod, 3/3 Running' },
+          { label: 'Verified: all three datasources correctly registered', code: 'curl -s -u admin:$PASS http://<grafana-svc-ip>/api/datasources\n# Alertmanager  isDefault: false\n# Loki          isDefault: false   <- from MY ConfigMap, url http://loki:3100\n# Prometheus    isDefault: true    <- unchanged, the real org default' },
+        ],
+        troubleshooting: [
+          'A Helm chart flag that sounds like it fully disables a component (`grafana.enabled=false`) may still leave side-effect resources (ConfigMaps, Secrets) behind — always list what a chart actually created (`kubectl get all,configmap -l app.kubernetes.io/instance=<release>`) rather than trusting the values file alone.',
+          'CrashLoopBackOff on a *new* replica while the *old* one stays healthy is correct, safe Kubernetes rolling-update behavior, not a separate bug — the same pattern already seen in Module 8\'s intentional bad-image rollout test.',
+        ],
+        interview: [
+          'Why did the old Grafana pod stay healthy and serving traffic while the new one crash-looped, and why is that the correct behavior rather than a problem to "fix" by force-deleting both pods?',
+          'How would you find which of several similarly-labeled ConfigMaps is the actual source of a provisioning conflict?',
+        ],
+        azureConnection:
+          "No Azure service was involved in this incident at all — it's a pure Kubernetes/Helm mechanics bug, and that's itself the point Module 9 made: this is exactly the category of operational surprise a managed control plane wouldn't remove, since the conflict lives in application-layer Helm charts, not the infrastructure AKS would have managed instead.",
+      },
+      {
+        id: 'grafana-dashboard-live-data',
+        title: 'A real Grafana dashboard, built and verified against live cluster data',
+        concept:
+          'A dashboard ("AzureOps k3s Cluster Overview") was created via Grafana\'s HTTP API (`POST /api/dashboards/db`) rather than the UI, so its exact JSON definition is reproducible and versionable. Five panels, each backed by a real PromQL or LogQL query against the actual running cluster: node CPU usage (`rate(node_cpu_seconds_total{mode="idle"}[5m])`), node memory usage (`node_memory_MemAvailable_bytes` / `node_memory_MemTotal_bytes`), running pods per namespace (`kube_pod_status_phase{phase="Running"}`), pod restarts in the last hour, and a live Loki log stream for the `monitoring` namespace. Every query was independently re-run directly against Prometheus/Loki (not just trusted because the panel rendered) and returned real, current values: ~5-7% CPU and ~17-26% memory across all three nodes, 7 pods in `kube-system` and 12 in `monitoring`.',
+        whyDevops:
+          "A dashboard that was never verified against a raw API query is just decoration — the discipline here (query Prometheus/Loki directly, compare against what the panel shows) is the same real-verification-over-assumption practice used throughout this entire curriculum, applied to observability tooling itself.",
+        handsOn: [
+          { label: 'Creating the dashboard via API (reproducible, not UI-clicked)', code: "curl -s -u admin:$PASS -H 'Content-Type: application/json' \\\n  -X POST http://<grafana-svc-ip>/api/dashboards/db \\\n  --data-binary @dashboard.json\n# {\"status\":\"success\",\"uid\":\"azureops-cluster-overview\", ...}" },
+          { label: 'Independently verifying a panel query against Prometheus directly', code: "curl -s -G http://<prometheus-svc-ip>:9090/api/v1/query \\\n  --data-urlencode 'query=100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)'\n# real result: 3 instances, ~5-7% each -- matches the panel" },
+          { label: 'Confirming Promtail is actually shipping logs into Loki', code: "kubectl get daemonset -n monitoring\n# loki-promtail   3 desired, 3 current, 3 ready  (one per node)\n\ncurl -s -G http://<loki-svc-ip>:3100/loki/api/v1/query_range \\\n  --data-urlencode 'query={namespace=\"monitoring\"}' --data-urlencode 'limit=5'\n# real log lines returned, e.g. Loki's own compaction/shipping logs" },
+        ],
+        troubleshooting: [
+          'A dashboard panel rendering *something* isn\'t proof it\'s correct — always cross-check at least one panel\'s query directly against the datasource\'s own API before trusting the rest.',
+        ],
+        interview: [
+          'Why is defining a dashboard as JSON via the API more operationally sound than building it by hand in the UI?',
+          'What\'s the difference between Loki\'s label-based indexing (LogQL) and a full-text log search, and why does that trade-off make it cheaper to run at scale?',
+        ],
+        azureConnection:
+          "This dashboard, running entirely on the 3 self-managed k3s nodes at $0 marginal cost, is the concrete deliverable that answers Chapter 1's cost comparison — real cluster observability with the same visual/operational experience as Azure Managed Grafana, without its per-seat billing.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },
   { number: 8, title: 'Kubernetes Fundamentals', outcome: 'Understand the core Kubernetes control model before using AKS.' },
   { number: 9, title: 'Azure Kubernetes Service (AKS)', outcome: 'Deploy and operate a realistic workload on managed Kubernetes.' },
-  { number: 10, title: 'Monitoring & Observability', outcome: 'Detect, investigate, and explain production behavior.' },
   { number: 11, title: 'Azure Security & Governance', outcome: 'Secure the application and its delivery pipeline without hard-coded secrets.' },
   { number: 12, title: 'Azure Front Door & Production Edge', outcome: 'Understand when and how Front Door fits into a global Azure application.' },
   { number: 13, title: 'Infrastructure as Code with Terraform', outcome: 'Capture everything built across Modules 1-12 as code, and prove it by rebuilding from Terraform alone.' },

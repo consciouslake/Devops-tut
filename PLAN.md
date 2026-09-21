@@ -212,6 +212,14 @@ Full chapter content for all 11 chapters in the frontend curriculum browser. See
 
 **Outcome:** detect, investigate, and explain production behavior.
 
+**Status (2026-09-22):** Done (core PLG stack) — driven by an explicit cost-consciousness request to compare paid Azure monitoring/logging (Azure Monitor, Log Analytics, Managed Grafana, Application Insights) against self-hosted alternatives before building anything. User chose the self-hosted PLG stack (Prometheus + Loki + Grafana) on the existing k3s cluster over any Azure-native option, even free tiers. Real work done:
+- `kube-prometheus-stack` and `loki-stack` installed via Helm onto the real 3-node k3s cluster (Module 8's cluster) — Prometheus, Grafana, Alertmanager, kube-state-metrics, node-exporter (×3), Loki, Promtail (×3), all genuinely `Running`.
+- Real bug hit and fixed: `az vm run-command invoke` executes as root with `$HOME` unset, so Helm's repo config didn't persist across separate invocations (`helm repo list` came back empty on the next call). Fixed with explicit `export HOME=/root`.
+- Real incident hit and fixed: wiring a Loki datasource into Grafana via the standard sidecar ConfigMap pattern caused the new Grafana pod to `CrashLoopBackOff` on restart (`"Only one datasource per organization can be marked as default"`) while the old pod correctly stayed healthy (safe rolling update). Root cause: the `loki-stack` Helm chart auto-creates its own datasource ConfigMap (`loki-loki-stack`, `isDefault: true`) even with `grafana.enabled=false`, conflicting with `kube-prometheus-stack`'s own default Prometheus datasource. Fixed by deleting the redundant chart-generated ConfigMap.
+- Verified end-to-end with real data, not just "pods are running": all 23 Prometheus scrape targets `up`; real logs queried back out of Loki; a Grafana dashboard ("AzureOps k3s Cluster Overview") created via the Grafana API with 5 panels (node CPU/memory, running pods by namespace, pod restarts, live Loki logs), and every panel's query independently re-run directly against Prometheus/Loki to confirm real values (~5-7% CPU, ~17-26% memory across all 3 nodes).
+- **Cost outcome:** $0 marginal cost — entire stack runs on the 3 k3s nodes already provisioned in Module 8.
+- **Deferred, not yet done:** OpenTelemetry tracing for the `/chat` path (Redis/Qdrant/Gemini latency breakdown) and a self-hosted Tempo/Jaeger backend; Alertmanager alert rules (bundled and running, but no real rules configured yet). Full chapter content (4 chapters: cost comparison, PLG deployment, the datasource-conflict incident, the verified dashboard) written in the frontend curriculum browser. See LEARNING_LOG.md "Module 10 — Monitoring & Observability" for details.
+
 ### Module 11 — Azure Security & Governance
 
 1. Shared responsibility

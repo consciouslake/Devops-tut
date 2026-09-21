@@ -1002,3 +1002,49 @@ Eight modules of the 13-module roadmap now complete: Linux, Git, Networking, Doc
 - Nothing broke — the discipline here was resisting the temptation to state exact AKS Standard/Premium pricing from memory when the source page itself didn't show a concrete number, after already having gotten burned once this session by asserting unverified specifics (the invented `trivy-action` tag in Module 7).
 
 **Cost check:** Zero new spend — no AKS cluster created, consistent with the module's entire premise.
+
+## Module 10 — Monitoring & Observability, PLG stack on the real k3s cluster — 2026-09-22
+
+**Plan item(s):** Module 10, driven by an explicit request: "How do cost effective teams manage monitoring and logging without incurring much expense... write down the comparison including paid apps." User then chose the self-hosted PLG stack (Prometheus + Loki + Grafana) on the existing k3s cluster over any Azure-native monitoring option via AskUserQuestion.
+
+**What I did:**
+- Wrote a real comparison first, before building anything: Azure Monitor/Log Analytics (billed per-GB ingested + retained), Application Insights (per-GB trace data), Azure Managed Grafana (per-user/per-workspace) versus Prometheus/Loki/Grafana OSS self-hosted on infrastructure already paid for (the Module 8 k3s cluster) — $0 marginal cost, at the price of owning the operational burden.
+- Installed `kube-prometheus-stack` (Prometheus, Grafana, Alertmanager, kube-state-metrics, node-exporter) and `loki-stack` (Loki + Promtail) via Helm onto the real 3-node cluster, using `az vm run-command invoke` as the only execution path (no SSH to app-vm1/app-vm2).
+- Wired a Loki datasource into Grafana via the standard sidecar-discovery ConfigMap pattern.
+- Built a real Grafana dashboard ("AzureOps k3s Cluster Overview") via `POST /api/dashboards/db` — node CPU %, node memory %, running pods by namespace, pod restarts (1h), and a live Loki log panel for the `monitoring` namespace.
+- Verified every layer against raw API output, not just pod status: `kubectl get pods` (all Running), Prometheus `/api/v1/targets` (23/23 `up`, spanning API server, kubelet, CoreDNS, node-exporter ×3, kube-state-metrics, Alertmanager, Grafana), Loki `/loki/api/v1/query_range` (real log lines returned), Grafana `/api/datasources` (Alertmanager, Loki, Prometheus all correctly present, only Prometheus `isDefault`), and each dashboard panel's PromQL re-run directly against Prometheus to confirm the numbers matched (~5-7% CPU, ~17-26% memory across all 3 nodes; 7 pods in `kube-system`, 12 in `monitoring`).
+
+**Commands used:**
+```bash
+# Helm install (both charts)
+export HOME=/root
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+helm install loki grafana/loki-stack -n monitoring --set grafana.enabled=false --set promtail.enabled=true
+
+# Diagnosing the datasource conflict
+kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
+kubectl logs -n monitoring <crashing-pod> -c grafana
+kubectl get configmap -n monitoring -l grafana_datasource=1
+kubectl get configmap -n monitoring loki-loki-stack -o jsonpath='{.data}'
+
+# Fix
+kubectl delete configmap -n monitoring loki-loki-stack
+kubectl delete pod -n monitoring -l app.kubernetes.io/name=grafana
+kubectl rollout status deployment monitoring-grafana -n monitoring
+
+# Verification
+curl -s -G http://<prometheus-ip>:9090/api/v1/targets
+curl -s -G http://<loki-ip>:3100/loki/api/v1/query_range --data-urlencode 'query={namespace="monitoring"}'
+curl -s -u admin:$PW http://<grafana-ip>/api/datasources
+curl -s -u admin:$PW -X POST http://<grafana-ip>/api/dashboards/db --data-binary @dashboard.json
+```
+
+**What broke / what I learned:**
+- **`$HOME`-unset under `az vm run-command invoke`:** `helm repo add` succeeded in one invocation, but the very next invocation's `helm repo list` returned empty and `helm install` failed with `repo ... not found`. Root cause confirmed by checking `whoami` and `echo HOME=$HOME` — the remote-execution shell runs as `root` with no `$HOME` set, so Helm's dotfile-based repo config wasn't persisting reliably between separate invocations. Fixed with an explicit `export HOME=/root` at the start of every Helm-touching script.
+- **Grafana `CrashLoopBackOff` after wiring Loki in:** the sidecar's live-reload API call to Grafana returned 500s, so I restarted the deployment to force a fresh provisioning read at pod startup — the new pod then crash-looped with `"Only one datasource per organization can be marked as default"` while the old pod stayed correctly healthy (same safe-rollout behavior already demonstrated in Module 8 Ch 10). Listing ConfigMaps with the `grafana_datasource=1` label surfaced a THIRD, unexpected one — `loki-loki-stack`, auto-created by the `loki-stack` Helm chart itself despite `grafana.enabled=false` in the install values — and it set `isDefault: true`, directly conflicting with `kube-prometheus-stack`'s own default Prometheus datasource. Deleting the redundant chart-generated ConfigMap (keeping only my own hand-authored `loki-datasource` with `isDefault: false`) fixed it — verified by a clean `kubectl rollout status` and a re-query of `/api/datasources` showing all three correctly registered.
+- Minor false start along the way: guessed a ConfigMap name (`loki-grafana-datasource`) that didn't exist before finding the real name (`loki-loki-stack`) in the actual `kubectl get configmap` listing — a reminder to read the prior command's real output rather than assume a plausible name.
+
+**Cost check:** $0 marginal spend — the entire PLG stack (Prometheus, Grafana, Alertmanager, Loki, Promtail) runs on the 3 k3s nodes already provisioned and paid for in Module 8. No Azure Monitor, Log Analytics, Managed Grafana, or Application Insights resource created. Deferred to a later session: OpenTelemetry tracing for the `/chat` path + self-hosted Tempo/Jaeger, and real Alertmanager alert rules.

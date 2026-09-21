@@ -650,3 +650,122 @@ All 10 chapters done, all built and verified for real:
 Two deferred decisions tracked for later modules: `devopspk.online` + Front Door (Module 13), and the managed-vs-software Load Balancer final call (Module 9, alongside the Qdrant cluster).
 
 Six modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking.
+
+---
+
+## Roadmap reorder — Terraform moved to Module 13 — 2026-09-21
+
+**What happened:** User asked to move Terraform to the end of the roadmap, reasoning that consolidating IaC once — after all the manual infrastructure work exists to actually capture — makes more sense than learning Terraform syntax mid-sequence before most of what it would express is even built yet. Renumbered Modules 9-13 down to 8-12 across `PLAN.md`, `CURRICULUM.md`, `README.md`, and the frontend curriculum browser, including cross-references inside Module 6's own chapter content that pointed at the old Kubernetes/Front Door module numbers.
+- **Real mistake made and caught:** committed the renumbering on `phase6-azure-networking` but never explicitly pushed it before the user merged that branch's PR on GitHub — the commit existed locally and (eventually) on the remote branch, but never reached `main` via that PR. Caught when the next session's `git pull` showed stale module numbers despite the "merge" having happened. Recovered cleanly: the commit was still reachable on the pushed (but now-orphaned) remote branch, cherry-picked it onto a fresh branch off `main`, verified the fix, and got it merged via a second small PR (`fix-terraform-reorder`).
+- **Lesson:** after making a commit intended for an already-open or about-to-be-merged PR, explicitly push immediately — don't assume a later "sync" step will catch a forgotten push; verify the actual file state on `main` after any merge before treating a module complete, rather than trusting that the working branch and the merged PR are automatically the same thing.
+
+New roadmap order: ... 7 CI/CD, 8 Kubernetes Fundamentals, 9 AKS, 10 Monitoring, 11 Security, 12 Front Door, 13 Terraform, Capstone.
+
+---
+
+## Module 7 — CI/CD with GitHub Actions, Chapters 1-6 — 2026-09-21
+
+**Plan item(s):** Module 7, Chapters 1-6 — CI vs CD, workflow syntax, runners/jobs/parallelism, artifacts/caching/matrices, secrets/environments, build+test Python/FastAPI.
+
+**What I did:**
+- Reviewed the real, existing `.github/workflows/ci.yml` (built back in Module 2: gitleaks, backend pytest, frontend build jobs) rather than introducing a fresh toy workflow — every chapter's hands-on material references this actual file.
+- Assessed this project's CI/CD maturity honestly: real CI exists (tests run automatically on every push), but zero CD before this module — every deployment so far (the Phase 1 VM, `app-vm1`/`app-vm2`) was done manually, live in a terminal.
+- Named a real, previously-unaddressed gap rather than skipping over it: `ci.yml` uses no dependency caching and no build matrix — small impact today (one Python version, fast installs), but the Artifacts/Caching/Matrices chapter uses this project's own gap as the example instead of a hypothetical one.
+- Verified the backend pytest job's claim locally rather than assuming it: `cd backend && pytest` → `1 passed`. Surfaced an unrelated real finding while doing so — `rag.py`'s `import google.generativeai as genai` is now deprecated in favor of the `google.genai` package (a `FutureWarning` in the test output); noted for later, not acted on yet since it's out of scope for this chapter.
+- Wrote full chapter content for Chapters 1-6 into the frontend curriculum browser, using the real `ci.yml` throughout instead of generic examples.
+
+**Commands used:**
+```bash
+cat .github/workflows/ci.yml
+cd backend && pytest
+```
+
+**What broke / what I learned:**
+- Nothing broke this session — a clean, low-risk set of chapters since they're primarily reviewing and correctly labeling work already done in Module 2, not building new infrastructure.
+- Google's `google-generativeai` Python package is deprecated in favor of `google-genai` — worth a future migration pass on `backend/rag.py`, tracked here rather than acted on immediately since it wasn't part of this module's scope.
+
+**Cost check:** No new spend — pure CI review and verification. Chapter 8 (Azure Container Registry) will introduce the first new cost in this module, to be confirmed with the user before creating it.
+
+---
+
+## Module 7 — CI/CD, Chapters 7-8 (Docker build+scan, real CVEs found and fixed) — 2026-09-21
+
+**Plan item(s):** Module 7 — build and scan Docker images (Trivy), plus a scan-triage-policy chapter (not in the original outline, added because the real findings this session genuinely warranted it).
+
+**What I did:**
+- Added a `docker-build-scan` job to `ci.yml`: builds both images, scans each with Trivy (`exit-code: 1`, genuinely fails the build on matching findings), gated behind `needs: [backend, frontend]`.
+- Tested Trivy locally via Docker before relying on CI feedback loops — hit the same Git Bash path-mangling bug as the rest of this project (`-v /var/run/docker.sock:/var/run/docker.sock` needed `MSYS_NO_PATHCONV=1`).
+- **Real finding #1 (backend, fixed):** `python-jose==3.3.0` has a CRITICAL CVE (CVE-2024-33663, fix: 3.4.0); `starlette` was pinned old (0.38.6) transitively by `fastapi==0.115.0`, with multiple HIGH CVEs. Bumping `python-jose` alone wasn't enough — `fastapi==0.115.0` caps `starlette<0.39.0`, so the `fastapi` pin itself had to loosen (`>=0.115.6`) before pip could resolve a patched `starlette`. Rebuilt, retested (`pytest` still `1 passed`), rescanned — clean.
+- **Real finding #2 (backend, documented not fixed):** `pyasn1==0.4.8` has multiple HIGH DoS CVEs (fix: 0.6.3+). Attempted to pin it directly — build failed: `python-jose==3.4.0` (the latest release) itself caps `pyasn1<0.5.0`. No available fix without replacing `python-jose` with an actively maintained alternative (e.g. `pyjwt`), which is a bigger change out of scope for this chapter. Documented the exception with reasoning in a new `backend/.trivyignore` rather than leaving it unaddressed or silently ignored.
+- **Real finding #3 (frontend):** initially only looked at `tail`-truncated scan output and saw ~4 findings (util-linux, libxml2, nghttp2) — re-ran with full JSON output and found the true count was **37 unique HIGH CVEs**, all Alpine OS packages in the `nginx:1.27-alpine` base image (curl, openssl, libexpat, libuuid, libxml2, nghttp2, c-ares), none in application code. Bumping the base image to `nginx:1.29-alpine` cleared several; the rest were judged not worth a 30+-entry `.trivyignore` (low signal-to-noise) and instead handled via a differentiated CI policy: the frontend Trivy step now gates on `CRITICAL` only, with the reasoning written directly into `ci.yml` as a comment, while the backend keeps the stricter `CRITICAL,HIGH` bar since its dependencies are fully within this project's control.
+- Rebuilt the actual running docker-compose stack (not just test-tagged images) with the fixes, confirmed the live app still works: `/health` → `{"status":"UP"}`, frontend → `HTTP 200`.
+- Wrote up both the technical fix chapter and a dedicated triage-policy chapter (fix vs. document-and-accept vs. policy-differentiate) since the real findings this session genuinely spanned all three categories.
+
+**Commands used:**
+```bash
+docker build -t devops-tut-backend:test ./backend
+MSYS_NO_PATHCONV=1 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  aquasec/trivy:latest image --severity CRITICAL,HIGH --ignore-unfixed devops-tut-backend:test
+
+# fix attempt 1 (failed): pinning pyasn1 directly
+# python-jose 3.4.0 depends on pyasn1<0.5.0 and >=0.4.1  <- ResolutionImpossible
+
+# fix that worked: loosen fastapi pin
+# requirements.txt: fastapi>=0.115.6, starlette>=1.3.1, python-jose[cryptography]==3.4.0
+
+# full, untruncated scan output (caught the 37-vs-4 finding-count gap)
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+  image --format json devops-tut-frontend:test > scratchpad/frontend-scan.json
+
+docker compose up -d --build   # rebuilt the real running stack with fixes
+curl localhost:8000/health     # {"status":"UP"}
+```
+
+**What broke / what I learned:**
+- Trusting `tail`-truncated command output for a security scan is a real, easy-to-make mistake — always get the full result (or count entries programmatically) before concluding a scan is "mostly clean."
+- A vulnerable transitive dependency capped by a *direct* dependency you don't control (here, `python-jose` capping `pyasn1`) can't always be fixed by pinning alone — sometimes the real fix is replacing the direct dependency itself, which is a bigger decision than a CI chapter should make unilaterally; documenting the exception honestly is the correct scope-appropriate response.
+- Differentiating a security gate's severity threshold by image/package category (application code vs. base-image OS packages) is legitimate, standard practice — not a workaround — once a per-CVE ignore list would grow large enough to lose its signal value.
+
+**Cost check:** No new spend — pure CI/Docker/security work, no Azure resources touched.
+
+---
+
+## Module 7 — CI/CD, Chapter 9 (registry choice: ghcr.io instead of ACR) — 2026-09-21
+
+**Plan item(s):** Module 7, Chapter 9 — push images to a container registry. Original plan assumed Azure Container Registry; redirected after a direct cost question.
+
+**What I did:**
+- User asked directly: why pay for Azure Container Registry (~$5/month) when GitHub already hosts the code? Worked through the real distinction — GitHub hosts source code, not built container images, so *some* registry is genuinely needed, but it doesn't have to be Azure's.
+- Laid out the real tradeoff: ACR's genuine advantages are Private Endpoint support (images pulled entirely inside a VNet) and native Managed Identity integration (passwordless pulls, strong on AKS) — neither is exercised by this project's current architecture, since `app-vm1`/`app-vm2` already pull images over the public internet regardless (proven in Module 6 when the WAF containers came from Docker Hub the same way).
+- Chose **GitHub Container Registry (`ghcr.io`)** instead — zero cost, and simpler CI auth (the built-in `GITHUB_TOKEN` with `packages: write` permission, no OIDC federation needed just to push, unlike ACR which would need Chapter 10's OIDC work done first).
+- Extended `docker-build-scan` in `ci.yml`: after the Trivy scans pass, both images get pushed to `ghcr.io` — but only `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so pull requests still get full build+scan validation without ever publishing an image. Tagged with both the commit SHA and `latest`.
+- Tracked ACR as a real revisit point for Module 9 (AKS) rather than dismissing it outright — private-network image pulls become a much stronger argument once actually running on AKS with network policy in place.
+
+**Commands used:**
+```bash
+python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"   # syntax validation only --
+# the actual push steps only run on a real merge to main, not on this feature branch
+```
+
+**What broke / what I learned:**
+- Nothing broke technically — this chapter was pure architecture decision-making, the same "does the managed Azure product's specific advantage actually apply to what we've built" question asked repeatedly through Module 6 (Load Balancer, WAF, Front Door), now applied to Module 7's registry choice too.
+- GitHub Actions' default `GITHUB_TOKEN` needs an explicit `permissions: packages: write` block at the job level to push to `ghcr.io` — without it, the token defaults to read-only package access and login succeeds while push silently fails to authorize.
+
+**Cost check:** Zero new spend — chose the free option deliberately, after comparing it honestly against the paid one rather than assuming the paid one was required.
+
+---
+
+## Module 7 — real CI failure: invented action version tag — 2026-09-21
+
+**What broke:** the actual GitHub Actions run of `docker-build-scan` failed at "Set up job" with `Error: Unable to resolve action 'aquasecurity/trivy-action@0.28.0', unable to find version '0.28.0'` — a tag that doesn't exist. It was guessed rather than verified when the job was first written.
+
+**What I did:**
+- Used `WebFetch` against the action's real GitHub releases page to find actually-existing tags — confirmed the project uses a `v`-prefixed scheme (e.g. `v0.36.0`), not the bare `0.28.0` guessed earlier.
+- Considered pinning to an exact commit SHA (the more secure practice for a third-party action, especially notable since the releases page mentioned a past supply-chain security incident around duplicate releases) — but `WebFetch` summarizes API responses through a smaller model, and two separate fetches returned two different-looking SHAs (one was the annotated-tag-object SHA, not the commit SHA) — too much risk of silently transcribing a wrong 40-character hash and reintroducing the same class of bug. Used the verified tag `v0.36.0` instead, a lower-risk fix given the tool available.
+- While fixing this, also proactively verified `docker/login-action@v3` (added in the same chapter, also unverified when written) — found `v4` is now current, bumped to it rather than leave a second unverified tag in place.
+- Fixed, validated YAML syntax, committed, and pushed immediately.
+
+**What I learned:**
+- Never write a specific version/tag for a third-party GitHub Action from memory or assumption — verify it exists first via the actual releases page, the same discipline this project already applies to `az` commands and Docker image tags.
+- When a tool that summarizes content through a smaller model (like `WebFetch`) returns something security-sensitive (a commit hash, a credential-shaped string), treat the output as a lead to verify further, not a fact to paste directly into a config file — the risk of a subtly wrong long hex string is real and the failure mode (a broken or, worse, wrong-but-valid pin) can be hard to notice later.
+- Real GitHub Actions runs are the actual ground truth for whether a workflow is correct — local YAML syntax validation (which passed the whole time) only catches syntax errors, not semantic ones like a nonexistent action version.

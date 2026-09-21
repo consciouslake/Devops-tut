@@ -1301,6 +1301,198 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'cicd-github-actions',
+    number: 7,
+    mono: 'CI',
+    title: 'CI/CD with GitHub Actions',
+    outcome: 'Create a repeatable build-test-scan-deploy pipeline.',
+    chapters: [
+      {
+        id: 'ci-vs-cd',
+        title: 'CI vs CD and deployment lifecycle',
+        concept:
+          "Continuous Integration (CI) is the practice of automatically building and testing every change as soon as it's pushed — catching breakage within minutes instead of at release time. Continuous Delivery/Deployment (CD) extends that pipeline to actually ship the change: Delivery means it's automatically packaged and ready to deploy with a manual approval gate; Deployment means it goes live with no human in the loop at all. The full lifecycle: commit -> build -> test -> scan -> package -> (approve) -> deploy -> verify -> (rollback if needed). Every stage exists to catch a different class of problem before it reaches production.",
+        whyDevops:
+          "This vocabulary distinction matters in interviews and in practice — \"we do CI/CD\" often actually means \"we do CI\" (tests run automatically) without real CD (deploys still require someone to manually SSH in and run a script), which is exactly this project's state before this module: real tests, zero automated deployment.",
+        handsOn: [
+          { label: 'This project\'s current lifecycle stage, honestly assessed', code: '# CI: yes -- .github/workflows/ci.yml runs gitleaks + pytest + frontend build on every push\n# CD: no -- every deployment so far (Phase 1 VM, app-vm1/app-vm2) was done by hand, live in a terminal' },
+        ],
+        troubleshooting: [
+          'Calling a pipeline "CI/CD" when it only runs tests → be precise: that\'s CI alone. CD specifically requires an automated path to a running deployment, which this project doesn\'t have yet.',
+        ],
+        interview: [
+          'What\'s the practical difference between Continuous Delivery and Continuous Deployment?',
+          'Why might a team deliberately choose Continuous Delivery (manual approval) over full Continuous Deployment even with a mature test suite?',
+        ],
+        azureConnection:
+          'This module\'s job is to take this project from "CI only" to a real, automated path to Azure — building and scanning a Docker image, pushing it to a registry, and deploying it, authenticated without a single stored password.',
+      },
+      {
+        id: 'workflow-syntax',
+        title: 'GitHub Actions workflow syntax',
+        concept:
+          "A workflow is a YAML file in `.github/workflows/`. `on:` defines triggers (push, pull_request, schedule, manual dispatch). `jobs:` contains one or more named jobs, each running on a fresh `runs-on:` VM. `steps:` within a job run sequentially — either `uses:` (a reusable action, like `actions/checkout@v4`) or `run:` (a raw shell command). `defaults.run.working-directory` sets a default folder for all `run:` steps in a job, avoiding repetitive `cd` commands.",
+        whyDevops:
+          "Reading and writing this syntax fluently is a daily skill from here on — every chapter in this module extends the same real file rather than introducing a new toy example.",
+        handsOn: [
+          { label: 'The real, current ci.yml', code: 'cat .github/workflows/ci.yml' },
+        ],
+        troubleshooting: [
+          'A step fails with "command not found" for a tool assumed to be pre-installed → GitHub-hosted runners have a specific, documented toolset per OS image; anything else needs an explicit setup action (like `actions/setup-python`) or install step.',
+        ],
+        interview: [
+          'What\'s the difference between `uses:` and `run:` in a workflow step?',
+          'Why does each job get its own fresh runner instead of jobs sharing one machine?',
+        ],
+        azureConnection:
+          "This project's `backend` job uses exactly this pattern: `defaults.run.working-directory: backend`, then `actions/setup-python@v5`, then plain `run:` steps for `pip install` and `pytest` — no magic, just sequential steps on a fresh Ubuntu VM.",
+      },
+      {
+        id: 'runners-jobs-steps-actions',
+        title: 'Runners, jobs, steps, actions',
+        concept:
+          "A runner is the actual VM (or container) executing a job — GitHub-hosted runners are free (within limits) and ephemeral, torn down after each run; self-hosted runners are your own machines, useful for private network access or specialized hardware. Jobs in the same workflow run in parallel by default unless one explicitly `needs:` another — this project's `gitleaks`, `backend`, and `frontend` jobs all run simultaneously, independent of each other, which is why the whole pipeline finishes in roughly the time of the slowest single job, not the sum of all three.",
+        whyDevops:
+          "Understanding parallel-by-default is what lets you design fast pipelines — serializing jobs that don't actually depend on each other is a common, easy-to-fix source of slow CI.",
+        handsOn: [
+          { label: 'This project\'s three jobs — no needs: between them, so they run in parallel', code: 'grep -A1 "^  [a-z]*:" .github/workflows/ci.yml | grep -v "^--"' },
+        ],
+        troubleshooting: [
+          'A job that should wait for another finishes (or fails) before that dependency is ready → missing `needs: [other-job-name]`; without it, GitHub Actions assumes independence and runs everything it can in parallel.',
+        ],
+        interview: [
+          'Why do gitleaks/backend/frontend all finish around the same time in this project\'s CI, rather than one after another?',
+          'When would you choose a self-hosted runner over a GitHub-hosted one?',
+        ],
+        azureConnection:
+          "Once a `deploy` job is added later in this module, it will need `needs: [backend, frontend, docker-build]` — deployment should only happen after everything upstream has actually passed, unlike the current three jobs which are intentionally independent.",
+      },
+      {
+        id: 'artifacts-caching-matrices',
+        title: 'Artifacts, caching, matrices',
+        concept:
+          "An artifact is a file (or set of files) produced by one job and made available to download or pass to another job — e.g. a built frontend `dist/` folder, or a compiled binary. Caching (like `actions/setup-python`'s built-in pip cache, or `actions/cache` generally) persists dependency downloads between runs so `pip install`/`npm install` don't re-download everything from scratch every single time — a major speed win once a project's dependency list grows. A matrix runs the same job multiple times with different parameter combinations (e.g. Python 3.10/3.11/3.12) in parallel, catching version-specific breakage without writing the job three times.",
+        whyDevops:
+          "None of this project's current CI uses caching or matrices yet — a real, honest gap worth naming rather than pretending it's optimized. Small now (fast installs, one Python version), but the exact kind of thing that becomes a real cost/speed problem as a project grows and gets ignored because it \"works fine.\"",
+        handsOn: [
+          { label: 'What adding pip caching would look like (not yet done)', code: "- uses: actions/setup-python@v5\n  with:\n    python-version: '3.11'\n    cache: 'pip'   # <- not currently in this project's ci.yml" },
+        ],
+        troubleshooting: [
+          'CI feels slow and nobody knows why → check whether dependency installation is being cached at all; re-downloading the same packages on every single run is a common, invisible source of wasted minutes.',
+        ],
+        interview: [
+          'What\'s the difference between an artifact and a cache in GitHub Actions?',
+          'When would a build matrix be worth the added complexity?',
+        ],
+        azureConnection:
+          "A Docker image (Chapter 7) is conceptually an artifact too — the thing one job (build) produces that a later job (push/deploy) consumes, just using a container registry instead of GitHub's own artifact storage.",
+      },
+      {
+        id: 'secrets-environments',
+        title: 'Secrets and environments',
+        concept:
+          "GitHub Secrets (repo or organization-level) are encrypted values injected as environment variables at runtime, never visible in logs (GitHub automatically masks a secret's value if it ever appears in output) and never readable back through the API once set. GitHub Environments add a named deployment target (e.g. \"production\") with optional protection rules — required reviewers, wait timers, or restricting which branches can deploy to it — giving a real approval gate without a separate tool.",
+        whyDevops:
+          "This is the mechanism Chapter 10's OIDC setup replaces entirely for Azure auth specifically (no stored secret needed at all), but Secrets/Environments remain the right tool for anything that genuinely needs one (a third-party API key, for instance).",
+        handsOn: [
+          { label: 'Already used once in this project', code: "env:\n  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # gitleaks job, ci.yml -- GITHUB_TOKEN is auto-provided, no manual setup needed" },
+        ],
+        troubleshooting: [
+          'A secret value shows up in workflow logs unmasked → GitHub only masks exact matches of the registered secret value; if a step transforms/encodes it first (base64, etc.) before printing, the transformed version won\'t be masked — avoid ever deliberately printing a secret, transformed or not.',
+        ],
+        interview: [
+          'How does GitHub prevent a secret from leaking into build logs?',
+          'What does a required reviewer on a GitHub Environment actually gate?',
+        ],
+        azureConnection:
+          "The eventual `deploy` job will use a GitHub Environment (e.g. `production`) so deployment to Azure requires the same kind of deliberate gate this project already applies to Azure IAM changes (declining to self-assign roles autonomously, back in Module 5) — a human in the loop for anything that changes what's actually running.",
+      },
+      {
+        id: 'build-test-fastapi',
+        title: 'Build and test Python/FastAPI',
+        concept:
+          "This chapter has no new material — `ci.yml`'s `backend` job already does exactly this: checkout, set up Python 3.11, `pip install -r requirements.txt`, `pytest`. It runs on every push and pull request, so a broken backend test fails visibly before merge, not after.",
+        whyDevops:
+          "Confirming something already works, with evidence, is still real verification — not everything in a curriculum needs a new build to be worth checking.",
+        handsOn: [
+          { label: 'Run the same thing locally that CI runs', code: 'cd backend\npip install -r requirements.txt\npytest' },
+        ],
+        troubleshooting: [
+          'Tests pass locally but fail in CI → almost always an environment difference (a missing env var CI doesn\'t have, a dependency version pinned differently, or a test that accidentally depends on local state/files that don\'t exist on a fresh runner).',
+        ],
+        interview: [
+          'Why run the exact same test command in CI as you would locally, rather than a CI-specific test invocation?',
+        ],
+        azureConnection:
+          "This job is the first gate in what will become the full pipeline: backend tests -> Docker build+scan -> push to ACR -> deploy — nothing downstream should run if this fails, which is why the eventual `docker-build` job will declare `needs: [backend, frontend]`.",
+      },
+      {
+        id: 'build-scan-docker-images',
+        title: 'Build and scan Docker images',
+        concept:
+          "A `docker-build-scan` job builds both images (using `needs: [backend, frontend]` so it only runs after tests pass), then scans each with Trivy — `exit-code: 1` means the CI run genuinely fails if a matching-severity vulnerability is found, not just logs a warning. Trivy scans two different things at once: the application's own dependencies (Python packages, npm packages baked into the image) and the base image's OS packages (Alpine/Debian packages from `FROM python:3.11-slim` or `FROM nginx:1.29-alpine`) — a finding in either category blocks the build the same way.",
+        whyDevops:
+          "A security scanner that's configured but never actually tested against a real vulnerability teaches nothing — this chapter's real value came from the scan genuinely failing on real findings and having to fix them properly, not from writing YAML that happened to pass on the first try.",
+        handsOn: [
+          { label: 'The real job, added this session', code: 'docker-build-scan:\n  runs-on: ubuntu-latest\n  needs: [backend, frontend]\n  steps:\n    - uses: actions/checkout@v4\n    - run: docker build -t azureops-backend:${{ github.sha }} ./backend\n    - run: docker build -t azureops-frontend:${{ github.sha }} ./frontend\n    - uses: aquasecurity/trivy-action@0.28.0\n      with:\n        image-ref: azureops-backend:${{ github.sha }}\n        severity: CRITICAL,HIGH\n        exit-code: \'1\'\n        trivyignores: backend/.trivyignore' },
+        ],
+        troubleshooting: [
+          "A locally-run Trivy scan (via `docker run aquasec/trivy ... image <name>`) fails to find the image → on Windows/Git Bash, mounting the Docker socket (`-v /var/run/docker.sock:/var/run/docker.sock`) needs `MSYS_NO_PATHCONV=1` prefixed, the same path-mangling issue hit throughout this project — without it, the socket path gets corrupted into a Windows path and Trivy can't reach the Docker daemon at all.",
+          'A `docker run --rm ... image <name> | tail -N` scan output looks clean, but re-running without truncation shows dozens more findings → always check the actual finding count (or use `--format json` and count entries) before trusting a scan result glanced at through `tail` — this happened for real in this session: a frontend scan looked like only 3-4 findings until the full, untruncated output showed 37.',
+        ],
+        interview: [
+          'Why scan both the application dependencies and the base OS image, rather than just one?',
+          'What does `exit-code: 1` actually change about how a scan step behaves in CI?',
+        ],
+        azureConnection:
+          "The backend scan initially found a real CRITICAL CVE (`python-jose` 3.3.0) and several HIGH ones (`starlette` via an outdated `fastapi` pin) — both genuinely fixed by loosening the `fastapi` version pin so pip could resolve patched versions, verified by rebuilding and rescanning until clean. The frontend scan found 37 HIGH findings, all Alpine OS packages in the `nginx:1.27-alpine` base image — partially reduced by bumping to `nginx:1.29-alpine`, with the rest deliberately left as HIGH-not-CRITICAL and out of this build's gate (see the next chapter).",
+      },
+      {
+        id: 'scan-triage-policy',
+        title: 'Scan triage: what to fix vs. what to accept (and document)',
+        concept:
+          "Not every vulnerability finding deserves the same response. A CVE in a dependency you directly control, with a fix available, should be fixed immediately — that's what happened with the backend's `python-jose`/`starlette`. A CVE in a transitive dependency with NO available compatible fix (this session's `pyasn1`, capped by `python-jose` itself) needs a documented, reasoned exception — not silence, and not blocking forever on something you can't actually fix without a bigger change. A CVE in base-image OS packages that aren't exercised by how the container actually runs is a different category again — usually best handled by a different severity bar and a periodic base-image-refresh habit, not a per-CVE ignore list, especially once the count gets large (37 findings for one frontend image, in this project's real case).",
+        whyDevops:
+          "Blindly either \"fix everything\" or \"ignore everything\" both fail in practice — the first is often literally impossible (unfixable transitive pins, base-image churn), the second defeats the point of scanning at all. Real teams triage, and the triage decisions themselves need to be visible (a `.trivyignore` with reasons, a differentiated severity policy with a comment explaining why) rather than buried in someone's memory.",
+        handsOn: [
+          { label: 'The three real outcomes from this session, side by side', code: '# 1. FIXED: python-jose 3.3.0 -> 3.4.0, fastapi pin loosened to allow patched starlette\n# 2. ACCEPTED + DOCUMENTED (backend/.trivyignore): pyasn1 CVEs -- python-jose itself\n#    caps pyasn1<0.5.0, no newer python-jose relaxes it; real fix is replacing\n#    python-jose with pyjwt, tracked as a follow-up, not done here\n# 3. POLICY DIFFERENTIATED (frontend Trivy step): severity lowered to CRITICAL-only\n#    for the nginx/Alpine base image -- 37 HIGH findings, all OS packages, none\n#    reachable through this app\'s actual usage; cleared via periodic base-image bumps' },
+        ],
+        troubleshooting: [
+          'A `.trivyignore` entry has no comment explaining why → this is a real problem, not just style: six months later nobody (including future-you) can tell if it\'s still a valid exception or stale risk being carried forward blindly. Every entry in this project\'s `.trivyignore` files has a reason attached.',
+          'Tempted to just disable the scan (or set `exit-code: 0`) because triage feels like extra work → this defeats the entire purpose of scanning; the friction of triage is the point — it forces a decision instead of silent risk accumulation.',
+        ],
+        interview: [
+          'Walk through how you\'d decide whether to fix, formally accept, or adjust policy for a given vulnerability finding.',
+          'Why is an undocumented `.trivyignore` entry arguably worse than no ignore file at all?',
+        ],
+        azureConnection:
+          "This triage judgment is exactly what a human still needs to bring to CI/CD even with everything automated — the pipeline can find and block on issues, but deciding whether a given finding is fix-now, accept-with-reason, or policy-adjust is not (yet) something to automate away, the same principle behind this project declining to auto-assign IAM roles back in Module 5.",
+      },
+      {
+        id: 'push-container-registry',
+        title: 'Push to a container registry — Azure Container Registry vs. GitHub Container Registry',
+        concept:
+          "A container registry stores built images by `repository:tag`, so a deployment target can `docker pull` a specific version rather than needing the source code and a build environment. Azure Container Registry (ACR) is Azure's managed option (~$5/month Basic tier); GitHub Container Registry (`ghcr.io`), part of GitHub Packages, is free for the volumes a small project needs and authenticates in CI with the built-in `GITHUB_TOKEN` — no separate credential or OIDC setup required just to push. ACR's real, genuine advantages are Private Endpoint support (images pulled entirely inside a VNet, no internet egress) and native Managed Identity integration for passwordless pulls — both particularly strong once running on AKS. Neither advantage is in use yet: this project's VMs already pull images over the public internet regardless (that's how the Module 6 WAF containers came from Docker Hub), so ACR's private-pull benefit isn't being exercised today.",
+        whyDevops:
+          "This is a real, recurring build-vs-buy decision, same shape as Chapter 5's Load Balancer and Chapter 7's WAF choices from Module 6 — the cloud-native managed option isn't automatically correct just because it's cloud-native; it's correct once its specific advantages are actually needed.",
+        handsOn: [
+          { label: 'The real job, publishing only on merges to main (not every PR)', code: "docker-build-scan:\n  permissions:\n    packages: write   # <- grants GITHUB_TOKEN push access, no separate secret\n  env:\n    BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/azureops-backend\n  steps:\n    - uses: docker/login-action@v3\n      if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n      with:\n        registry: ghcr.io\n        username: ${{ github.actor }}\n        password: ${{ secrets.GITHUB_TOKEN }}\n    - run: docker push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}\n      if: github.event_name == 'push' && github.ref == 'refs/heads/main'" },
+        ],
+        troubleshooting: [
+          "Image push fails with a 403/denied error → check the job's `permissions: packages: write` is actually set; without it, the default `GITHUB_TOKEN` only has read access to packages, and login will appear to succeed while push fails.",
+          'A pull request run tries to push an image → the `if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'` guard on every publish-related step is what prevents this; PRs still get full build+scan validation, just never a real publish — the same "validate everything, publish only from main" distinction this project has now applied consistently since Chapter 1\'s CI-vs-CD framing.',
+        ],
+        interview: [
+          'What are ACR\'s actual, specific advantages over ghcr.io — not just "it\'s the Azure one"?',
+          'Why guard image-push steps on both event type AND branch, rather than branch alone?',
+          'How does GITHUB_TOKEN authenticate to ghcr.io without a separately configured secret?',
+        ],
+        azureConnection:
+          'A real cost-conscious decision made this session: asked directly why pay for ACR when GitHub already hosts the code, worked through the actual tradeoff (Private Endpoint + Managed Identity integration vs. $0 cost and simpler auth), and chose `ghcr.io` since neither of ACR\'s real advantages apply to this project\'s architecture yet. Tracked as a revisit point for when Module 9 (AKS) actually needs private-network image pulls — the same "defer until the architecture justifies it" pattern as the Load Balancer and Front Door decisions in Module 6.',
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [

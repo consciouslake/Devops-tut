@@ -1669,6 +1669,131 @@ export const modules: Module[] = [
         azureConnection:
           "This project's planned Ingress work (a later chapter) will front the cluster the same way `azureops-lb` + the ModSecurity WAF fronted `app-vm1`/`app-vm2` in Module 6 — conceptually the same job (get external traffic to the right backend), now handled by Kubernetes-native primitives (Service + Ingress) instead of an external Load Balancer.",
       },
+      {
+        id: 'configmaps-secrets',
+        title: 'ConfigMaps and Secrets',
+        concept:
+          "A ConfigMap holds non-sensitive configuration (key-value pairs); a Secret holds sensitive values, structurally identical but stored base64-encoded rather than plaintext — a critical distinction: base64 is an *encoding*, not encryption, and is trivially reversible by anyone with read access to the Secret object. Both can be injected into a pod as environment variables (`envFrom`) or mounted as files (a volume) — env vars are simpler but get baked into the process at startup only; mounted files can update live if the ConfigMap/Secret changes (with a short propagation delay), which env vars never do.",
+        whyDevops:
+          "This is the direct successor to Module 4/5's `backend/.env` and Module 5's Key Vault-bound plan — same underlying need (get config and secrets into a running process without hardcoding them), now expressed as first-class Kubernetes objects instead of a mounted file or an Azure-specific service.",
+        handsOn: [
+          { label: 'Verified live this session', code: "kubectl create configmap app-config --from-literal=APP_ENV=production --from-literal=LOG_LEVEL=info\nkubectl create secret generic app-secrets --from-literal=API_KEY=demo-fake-key\n# pod with envFrom: [configMapRef, secretRef] -- both landed correctly as env vars\nkubectl get secret app-secrets -o jsonpath='{.data.API_KEY}'\n# -> base64 string, decodable with: echo '<value>' | base64 -d" },
+        ],
+        troubleshooting: [
+          'Assuming a Secret is "secure" because `kubectl get secret -o yaml` shows gibberish → it\'s base64, not encryption; anyone with RBAC read access to that Secret object can trivially decode it. Real protection comes from RBAC restricting who can read Secrets at all, plus (for genuinely sensitive production secrets) encryption-at-rest on etcd itself or an external secrets manager — not the base64 encoding.',
+        ],
+        interview: [
+          'Why is a Kubernetes Secret only "sensitive by convention," not by actual encryption, by default?',
+          'When would you mount a ConfigMap as a file instead of injecting it as environment variables?',
+        ],
+        azureConnection:
+          "This project's `backend/.env` (Gemini API key, Qdrant/Redis config) is the natural candidate to become a Kubernetes Secret if/when the app itself gets deployed into this cluster — though Module 11's planned Key Vault integration would be the more production-appropriate real secret store, with Kubernetes Secrets at most holding a reference or being synced from it, not the primary store for something this sensitive.",
+      },
+      {
+        id: 'namespaces-rbac',
+        title: 'Namespaces and RBAC',
+        concept:
+          "A Namespace partitions a cluster into isolated logical sections — most object types (Pods, Services, ConfigMaps, Roles) exist within exactly one namespace, and by default nothing in one namespace can see into another by name. RBAC (Role-Based Access Control) — the same model Module 5 covered for Azure IAM — works almost identically here: a Role defines a set of allowed verbs (get/list/watch/create/delete) on specific resource types, scoped to one namespace; a RoleBinding grants that Role to a subject (a ServiceAccount, User, or Group). A ClusterRole/ClusterRoleBinding does the same but cluster-wide, spanning all namespaces.",
+        whyDevops:
+          "This is the exact same least-privilege discipline this project has applied to every Azure RBAC decision since Module 5 (scoped role assignments, never subscription-wide when avoidable) — now applied inside the cluster instead of at the Azure resource level.",
+        handsOn: [
+          { label: 'Verified live this session — the actual permission boundary, not just the YAML', code: "kubectl create namespace demo-ns\nkubectl create serviceaccount restricted-sa -n demo-ns\n# Role: get/list/watch on pods only, scoped to demo-ns; RoleBinding to restricted-sa\n\nkubectl auth can-i list pods --as=system:serviceaccount:demo-ns:restricted-sa -n demo-ns\n# -> yes\nkubectl auth can-i delete pods --as=system:serviceaccount:demo-ns:restricted-sa -n demo-ns\n# -> no (verb not granted)\nkubectl auth can-i list pods --as=system:serviceaccount:demo-ns:restricted-sa -n default\n# -> no (Role is namespace-scoped; RoleBinding only applies within demo-ns)" },
+        ],
+        troubleshooting: [
+          'A ServiceAccount can perform an action in one namespace but not another, despite "having the role" → confirm whether a Role (namespace-scoped) or ClusterRole (cluster-wide) was actually bound — a RoleBinding referencing even a ClusterRole only grants access within the RoleBinding\'s own namespace, a common point of confusion.',
+        ],
+        interview: [
+          'What\'s the practical difference between a Role+RoleBinding and a ClusterRole+ClusterRoleBinding?',
+          '`kubectl auth can-i` returned "no" for an action you expected to be allowed — what would you check first?',
+        ],
+        azureConnection:
+          'Directly parallel to Module 5\'s real RBAC finding (subscription Owner not granting Storage blob data access) — here, verified the inverse case for real: a deliberately narrow Role correctly allowed exactly what it granted and nothing more, tested with `kubectl auth can-i` rather than assumed from the YAML alone.',
+      },
+      {
+        id: 'health-probes-resources',
+        title: 'Health probes and resource requests/limits',
+        concept:
+          "A liveness probe answers \"should this container be restarted\" (repeated failures trigger a kubelet-initiated restart); a readiness probe answers \"should this pod receive traffic right now\" (failing removes it from Service endpoints without restarting it) — conflating the two is a common real mistake. `resources.requests` is what the scheduler reserves capacity for when placing a pod; `resources.limits` is a hard ceiling enforced by the kernel cgroup — exceeding a CPU limit throttles the process, but exceeding a memory limit gets the container killed outright (OOMKilled), because memory can't be throttled the way CPU can.",
+        whyDevops:
+          "Every VM/systemd health check and NSG/LB probe from Modules 1-6 had a direct manual analog to this chapter's Kubernetes-native version — the pattern is identical (define health, define what happens when it fails), just expressed differently at each layer of the stack.",
+        handsOn: [
+          { label: 'A real, verified liveness-probe restart', code: "livenessProbe:\n  exec:\n    command: [\"cat\", \"/tmp/healthy\"]\n  periodSeconds: 5\n  failureThreshold: 2\n# pod removed /tmp/healthy after 20s -- kubectl get pod showed RESTARTS: 1,\n# and `kubectl describe pod` events confirmed exactly 2 consecutive probe\n# failures before the kubelet restarted the container" },
+          { label: 'A real, verified OOMKill — after two failed attempts that taught more than a clean success would have', code: "resources:\n  requests: {memory: \"64Mi\"}\n  limits: {memory: \"150Mi\"}\n# container: python3 -c \"a = bytearray(300*1024*1024)\"\n# kubectl get pod -> STATUS: OOMKilled, confirmed via:\nkubectl get pod <name> -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}'\n# -> OOMKilled" },
+        ],
+        troubleshooting: [
+          'A too-low memory limit prevents the container from starting at all → hit this for real at `limits.memory: 20Mi` and again at `64Mi` for `busybox`: the error was `container init was OOM-killed (memory limit too low?)`, happening before the intended workload even ran — the limit needs headroom for container-runtime/process-init overhead, not just the workload\'s own expected usage.',
+          'Trying to trigger an OOMKill by writing to `/dev/shm` didn\'t work — got a plain error (exit code 1), not `OOMKilled` → `/dev/shm` is tmpfs with its own independent size cap (often defaulting to ~64MB) separate from the pod\'s cgroup memory limit; writing past THAT cap just fails the write, it doesn\'t exercise the pod\'s memory limit at all. Switched to genuine process-heap allocation (`bytearray()` in Python) to actually test against the cgroup limit — the standard, reliable technique for this.',
+          '`kubectl set image deployment/X container=newimage` silently does nothing → the container name (visible via `kubectl get deployment X -o jsonpath=\'{.spec.template.spec.containers[0].name}\'`) often isn\'t the same as the deployment name — `kubectl create deployment` names the container after the *image*, not the deployment; hit this directly this session.',
+        ],
+        interview: [
+          'What\'s the practical difference between a liveness and a readiness probe, and what fails differently if you mix them up?',
+          'Why does exceeding a CPU limit throttle a process, while exceeding a memory limit kills it?',
+          'Why might writing a large file to `/dev/shm` fail without ever triggering an OOMKill?',
+        ],
+        azureConnection:
+          'Three real, distinct debugging incidents in one chapter this session: a liveness probe restart verified via events, an OOMKill that took three attempts to correctly demonstrate (revealing the tmpfs-vs-cgroup-limit distinction along the way), and a silently-failed image update caused by an incorrect container name assumption — genuinely representative of what Kubernetes troubleshooting looks like in practice, not a clean, first-try tutorial.',
+      },
+      {
+        id: 'ingress',
+        title: 'Ingress',
+        concept:
+          "An Ingress resource declares HTTP(S) routing rules (host/path -> Service) at Layer 7, requiring an Ingress *controller* to actually implement them — the resource alone does nothing without one. k3s bundles Traefik by default, running as a `LoadBalancer`-type Service that (via k3s's own lightweight ServiceLB, not a cloud load balancer) binds directly to every node's own IP on ports 80/443 — external traffic to *any* node's IP reaches Traefik, which then reads Ingress rules and routes to the right backend Service, which in turn load-balances across that Service's pod endpoints.",
+        whyDevops:
+          "This is the Kubernetes-native version of Module 6's whole networking stack (Load Balancer -> WAF -> app) compressed into cluster-native primitives — same job, different layer, and worth comparing directly since both were built in this same project.",
+        handsOn: [
+          { label: 'Verified with a genuine public-internet request, not just kubectl output', code: "kubectl get svc -n kube-system traefik\n# LoadBalancer, EXTERNAL-IP: all 3 node private IPs, 80:<nodePort>/TCP\n\n# Opened port 80 on azureops-vm01's real public IP (20.235.48.180) temporarily,\n# deployed a 2-replica app + Service + Ingress, then from OUTSIDE the cluster entirely:\ncurl http://20.235.48.180/\n# -> real response, from an actual pod, routed through Traefik\n# ran it 6x -- alternated between both replicas, confirming real load balancing\n# through the full Ingress path, not just a single static response" },
+        ],
+        troubleshooting: [
+          'An Ingress is created but traffic never reaches it → `type=LoadBalancer` needs either a cloud-controller-manager (AKS has this, self-managed clusters don\'t by default) or k3s\'s bundled ServiceLB; confirm the Ingress controller\'s Service actually has an EXTERNAL-IP, not stuck at `<pending>`.',
+          "Opened a temporary NSG rule for this test and cleaned it up again afterward → same discipline as every other temporary public-exposure decision in this project (Module 6's `Allow-Internet-8080`, etc.) — nothing stays open once the reason for it is gone.",
+        ],
+        interview: [
+          'What\'s the actual relationship between an Ingress resource and an Ingress controller — does the resource do anything without one?',
+          'How does k3s provide `type=LoadBalancer` functionality without a cloud provider integration?',
+        ],
+        azureConnection:
+          'This chapter is where the deferred Module 6 decision (managed `azureops-lb` vs. software load balancing) gets a real answer for anything running inside this cluster: Traefik + Kubernetes Services already provide that function natively, verified with a real external request — no separate HAProxy build needed for cluster-hosted workloads, only for the still-standalone `app-vm1`/`app-vm2` VM-based deployment from Module 6, which remains a deliberate, separate comparison point.',
+      },
+      {
+        id: 'rolling-updates-rollback',
+        title: 'Rolling updates and rollback',
+        concept:
+          "A Deployment's default update strategy (`RollingUpdate`) replaces pods gradually — new replicas come up and pass their readiness probe before a corresponding number of old replicas are torn down, keeping the app available throughout. Every `kubectl set image` (or any pod-template change) creates a new ReplicaSet revision, tracked in rollout history; `kubectl rollout undo` reverts to the previous ReplicaSet, scaling it back up and the broken one back down — the same rolling, safety-preserving mechanism in reverse.",
+        whyDevops:
+          "This is the direct successor to Module 7's image-tagging strategy (immutable SHA tags specifically so a real rollback target exists) — Chapter 11 of Module 7 discussed rollback conceptually since there was no real app deployment yet to demonstrate it on; this chapter is where it actually happened, for real, inside the cluster.",
+        handsOn: [
+          { label: 'The full real sequence this session: good update -> bad update -> rollback', code: "kubectl create deployment rollout-demo --image=nginx:1.25-alpine --replicas=3\nkubectl set image deployment/rollout-demo nginx=nginx:1.27-alpine   # succeeded cleanly\n\nkubectl set image deployment/rollout-demo nginx=nginx:this-tag-does-not-exist\n# rollout genuinely stuck: 1 new pod ImagePullBackOff, all 3 OLD healthy pods\n# stayed Running the entire time -- never torn down for an unverified replacement\n\nkubectl rollout undo deployment rollout-demo\n# reverted cleanly to nginx:1.27-alpine, broken pod terminated, zero downtime\n# to the 3 already-healthy replicas throughout the whole incident" },
+        ],
+        troubleshooting: [
+          'A rollout appears to hang indefinitely → check `kubectl get pods` for the actual pod status (ImagePullBackOff, CrashLoopBackOff) rather than just waiting on `kubectl rollout status` — the rolling strategy will happily wait forever for a broken new replica to become ready, since "wait for readiness" is exactly the safety mechanism working as intended, not a bug.',
+        ],
+        interview: [
+          'Walk through exactly what happens, pod by pod, during a rolling update — why does it never take the app fully down even mid-update?',
+          'What does `kubectl rollout undo` actually do under the hood?',
+        ],
+        azureConnection:
+          "Genuinely closes the loop opened in Module 7 Chapter 11: rollback there was necessarily conceptual (immutable image tags exist, but `deploy` never rolled out a real app to roll back). Here, an actually bad deployment happened, was correctly contained by the rolling strategy's safety default, and was rolled back cleanly — the complete, real version of what Module 7 could only describe.",
+      },
+      {
+        id: 'kubernetes-troubleshooting-lab',
+        title: 'Kubernetes troubleshooting',
+        concept:
+          "This chapter has no new material — it's the synthesis of every real incident hit while building Chapters 6-10, the same pattern established since Module 1's troubleshooting lab: `kubectl describe pod <name>` (events, most failures explain themselves here first), `kubectl logs <name>` / `--previous` (for a crashed container's last output), `kubectl get events --sort-by=.lastTimestamp` (cluster-wide recent history), and `kubectl auth can-i` (permission questions) are the core toolkit — narrowest, most specific check first, same discipline as every troubleshooting chapter in this curriculum.",
+        whyDevops:
+          "Every one of this module's real bugs was solved by reading actual error output carefully rather than guessing — `container init was OOM-killed`, `unable to find container named...`, `ImagePullBackOff` are all direct, specific, and diagnosable the moment you look, which is the actual skill this chapter is testing.",
+        handsOn: [
+          { label: 'The core diagnostic toolkit, all genuinely used this session', code: 'kubectl describe pod <name>              # events -- almost always the fastest answer\nkubectl logs <name>                       # current container output\nkubectl logs <name> --previous            # last crashed container\'s output\nkubectl get pod <name> -o jsonpath=\'{.status.containerStatuses[0].lastState.terminated.reason}\'\nkubectl auth can-i <verb> <resource> --as=<subject> -n <namespace>' },
+        ],
+        troubleshooting: [
+          'Four real, distinct root causes hit and correctly diagnosed in this module alone: an incorrect container-name assumption (`kubectl set image` silently no-op), a memory limit too low for container init itself, a tmpfs size cap masquerading as a memory-limit test, and an intentionally-broken image tag causing a correctly-stuck (not broken) rollout — none guessed at, all confirmed via `describe`/`logs`/status fields before concluding what was actually wrong.',
+        ],
+        interview: [
+          'Walk through your diagnostic sequence for a pod stuck in `Pending` vs. one stuck in `CrashLoopBackOff` vs. one stuck in `ImagePullBackOff` — how does the approach differ?',
+          'What\'s the first command you run when a Deployment isn\'t behaving as expected, and why that one first?',
+        ],
+        azureConnection:
+          "This module's real incident count (5-6 genuine debugging sequences across a 3-node cluster spanning two Azure regions) is itself the strongest evidence that a self-managed cluster was the right learning choice over AKS — every one of those incidents was a real mechanic (cgroups, container runtime behavior, RBAC scoping, rolling-update safety) that a managed control plane would have made invisible.",
+      },
     ],
   },
 ]

@@ -924,3 +924,63 @@ sudo systemctl start k3s    # recovery
 - A 3-node etcd cluster's HA claim is only real once actually tested — stopping a node and confirming the API server stays responsive (not just watching `NotReady` appear) is what separates "should be HA" from "verified HA."
 
 **Cost check:** Zero new Azure compute — `app-vm1`/`app-vm2` (Module 6) and `azureops-vm01` (Phase 1, restarted from deallocated) are all VMs already being paid for. The only new resource is the VNet peering link itself (free to establish; cross-region data transfer has a small per-GB cost, negligible at this cluster's actual traffic volume).
+
+---
+
+## Module 8 — Kubernetes Fundamentals, Chapters 6-11 — MODULE COMPLETE — 2026-09-21
+
+**Plan item(s):** Module 8, Chapters 6-11 — ConfigMaps/Secrets, Namespaces/RBAC, health probes/resources, Ingress, rolling updates/rollback, troubleshooting. All built as real, live exercises on the actual 3-node cluster from Chapters 1-5, not conceptual walkthroughs.
+
+**What I did:**
+- **Ch 6**: created a real ConfigMap and Secret, injected both into a pod via `envFrom`, confirmed correct values inside the running container. Decoded the Secret's stored value directly (`kubectl get secret ... -o jsonpath` + base64) to make the "base64 is encoding, not encryption" point concrete rather than asserted.
+- **Ch 7**: created a real namespace, ServiceAccount, a Role scoped to `get/list/watch` on pods only, and a RoleBinding — then tested the actual boundary with `kubectl auth can-i` three ways: allowed in-scope, denied for `delete` (ungranted verb), denied entirely in a different namespace. All three matched RBAC theory exactly.
+- **Ch 8**: deployed a pod whose liveness probe genuinely failed after ~20s (a marker file removed on a delay) — confirmed a real restart via `RESTARTS: 1` and the exact two-failure sequence in `kubectl describe`'s events. Then spent three real attempts getting a genuine OOMKill: attempt 1 (`limits.memory: 20Mi`) failed container *init itself* before the workload ran; attempt 2 (`64Mi`, writing 200MB to `/dev/shm`) failed with a plain error, not OOM — discovered `/dev/shm` has its own independent tmpfs size cap (~64MB default) completely separate from the pod's cgroup memory limit, so exceeding it never exercises the limit at all; attempt 3 (`150Mi` limit, genuine Python `bytearray()` heap allocation) finally produced a real, confirmed `OOMKilled` status.
+- **Ch 9**: deployed a real 2-replica app behind a real Ingress (Traefik, k3s's bundled controller, already running as a `LoadBalancer`-type Service via k3s's own ServiceLB across all 3 node IPs). Temporarily opened port 80 on `azureops-vm01`'s NSG for its real public IP, then tested from genuinely outside the cluster (`curl` from this session's own environment, not from a node) — got real responses, confirmed load-balancing across both replicas by hitting it 6 times and seeing both pod names alternate. Cleaned up both the app and the temporary NSG rule afterward.
+- **Ch 10**: real successful rolling update (`nginx:1.25-alpine` -> `1.27-alpine`) — hit a real silent-failure first, though: `kubectl set image deployment/X container=...` did nothing because the actual container name (auto-derived from the image name by `kubectl create deployment`) wasn't the same as the deployment name I assumed. Fixed by checking the real name via jsonpath. Then pushed a genuinely broken image tag — rollout correctly got stuck (`ImagePullBackOff` on the new pod) while all 3 old, healthy pods stayed `Running` the entire time, never torn down for an unverified replacement. `kubectl rollout undo` cleanly reverted, zero disruption to the pods that were already healthy throughout.
+- **Ch 11**: written as a synthesis of the module's own real incidents (container-name assumption, the two failed OOM attempts, the intentionally-broken rollout) rather than a staged lab — consistent with every other troubleshooting chapter in this curriculum.
+
+**Commands used:**
+```bash
+# ConfigMap/Secret
+kubectl create configmap app-config --from-literal=APP_ENV=production --from-literal=LOG_LEVEL=info
+kubectl create secret generic app-secrets --from-literal=API_KEY=demo-fake-key
+kubectl get secret app-secrets -o jsonpath='{.data.API_KEY}'   # base64, trivially decodable
+
+# RBAC boundary, tested not assumed
+kubectl auth can-i list pods --as=system:serviceaccount:demo-ns:restricted-sa -n demo-ns     # yes
+kubectl auth can-i delete pods --as=system:serviceaccount:demo-ns:restricted-sa -n demo-ns   # no
+kubectl auth can-i list pods --as=system:serviceaccount:demo-ns:restricted-sa -n default     # no
+
+# OOM debugging journey (3 real attempts)
+# attempt 1: limits.memory: 20Mi -> "container init was OOM-killed (memory limit too low?)"
+# attempt 2: limits.memory: 64Mi, dd to /dev/shm -> plain Error, exit 1, NOT OOMKilled (tmpfs cap, not cgroup limit)
+# attempt 3: limits.memory: 150Mi, python3 -c "bytearray(300*1024*1024)" -> genuine OOMKilled
+
+# Ingress, tested from real outside-the-cluster
+az network nsg rule create --nsg-name azureops-vm01NSG --name Allow-Internet-HTTP-Ingress --destination-port-ranges 80
+curl http://20.235.48.180/   # real response through Traefik -> Service -> pod
+az network nsg rule delete --nsg-name azureops-vm01NSG --name Allow-Internet-HTTP-Ingress   # cleaned up after
+
+# Rolling update / rollback
+kubectl set image deployment/rollout-demo rollout-demo=nginx:1.27-alpine   # FAILED silently -- wrong container name
+kubectl get deployment rollout-demo -o jsonpath='{.spec.template.spec.containers[0].name}'   # -> "nginx", not "rollout-demo"
+kubectl set image deployment/rollout-demo nginx=nginx:1.27-alpine   # correct, worked
+kubectl set image deployment/rollout-demo nginx=nginx:this-tag-does-not-exist   # deliberately broken
+kubectl rollout undo deployment rollout-demo   # clean recovery
+```
+
+**What broke / what I learned:**
+- `kubectl create deployment --image=X` names the container after the image, not the deployment — a real, silent gotcha for `kubectl set image`, which fails with a clear stderr message but easy to miss if stdout is checked without stderr.
+- `/dev/shm` (tmpfs) has its own size cap independent of a pod's cgroup memory limit — a genuinely non-obvious distinction that took a failed attempt to discover; the standard, reliable way to test a memory limit is genuine process-heap allocation, not writing to tmpfs.
+- A too-low memory limit can prevent container *initialization* itself from succeeding, before the actual workload ever runs — worth setting limits with real headroom for runtime overhead, not just the expected workload footprint.
+- Testing a security/permission boundary with the actual tool built for it (`kubectl auth can-i`) rather than reasoning about the YAML is exactly the same discipline this project applied to Azure RBAC in Module 5 — verify the boundary, don't just configure it and assume.
+
+**Cost check:** Zero new Azure spend across all six chapters — one temporary NSG rule opened and closed for the Ingress test, everything else was pure Kubernetes-object work on the already-running cluster.
+
+---
+
+# MODULE 8 — KUBERNETES FUNDAMENTALS: COMPLETE (2026-09-21)
+
+All 11 chapters done on a real, self-managed, 3-node HA cluster spanning two Azure regions — built specifically to avoid AKS cost and to learn the control-plane mechanics directly, per explicit user request. Zero new Azure compute cost across the entire module (reused `app-vm1`, `app-vm2`, and the reactivated Phase 1 VM `azureops-vm01`). Real incidents throughout, not staged: a hard vCPU quota wall worked around with the user's own idea, a cross-region VNet peering built from scratch, a verified HA failure test, and six chapters' worth of genuine Kubernetes debugging (RBAC boundaries, OOM mechanics, rollout safety) — more hands-on real infrastructure work than any module since Module 6.
+
+Eight modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking, CI/CD, Kubernetes Fundamentals.

@@ -573,3 +573,24 @@ az network dns record-set list -g azureops-copilot-rg -z azureops-lab.test --que
 - Azure Cost Management's real billing data lags actual resource usage by roughly 8-24 hours — worth remembering before ever reporting a cost number as "confirmed" without checking whether the underlying resource is old enough for its usage to have posted yet.
 
 **Cost check:** One new public DNS zone (~$0.50/month base + per-query charges, negligible at this volume) — small, ongoing, deliberately accepted rather than overlooked.
+
+---
+
+## Module 6 — Azure Networking, Chapter 9 (Front Door — concept-only, no resource built) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 9 — Azure Front Door concepts. Deliberately built as concept-and-comparison only, no real resource created.
+
+**What I did:**
+- Before building anything, laid out Front Door's real cost (Standard ~$35/mo base + usage, Premium ~$330/mo base + usage) against what's actually been built so far in this module (LB ~$0.03/hr, software WAF $0 extra, DNS zone ~$0.50/mo) — by far the most expensive item discussed in the project.
+- Pointed out honestly that this project doesn't currently have the architecture Front Door's value proposition assumes: everything runs in one region (`centralindia`), so there's no second origin to fail over between and no geographically-distributed user base for edge proximity to matter for.
+- Presented four real alternatives with real cost figures: skip it entirely (correct default for single-region projects), Cloudflare free tier ($0, what many real cost-conscious teams actually use instead of a cloud provider's native edge product), Azure Traffic Manager (DNS-only failover, per-query pricing, no fixed base — a cheaper stepping stone once genuinely multi-region), and Front Door itself (once multi-region with real traffic to justify it).
+- Asked for direction and got two decisions: (1) Cloudflare free tier as the real hands-on build for this chapter, then (2) on discovering Cloudflare requires a real domain (unlike Azure DNS's `.test` trick from Chapter 8) and the only available domain is `devopspk.online` — which was explicitly reserved for Module 13 — chose to keep it untouched and do concept-only instead, preserving that earlier decision rather than quietly overriding it for convenience.
+- Wrote the full comparison (with real cost figures) into the actual chapter content in the frontend curriculum browser, not just left in chat — the same standard applied to every cost-conscious decision this module (Chapter 5's LB comparison, Chapter 7's WAF comparison).
+
+**Commands used:** None — this chapter deliberately built no new resources.
+
+**What broke / what I learned:**
+- Nothing broke technically — the "failure" avoided here was almost building infrastructure that didn't map to a real need (Front Door for a single-region app) or accidentally touching a domain reserved for a later, deliberate step (Cloudflare requiring `devopspk.online`).
+- Cloudflare's free tier, despite being the "cost-conscious" choice by cost alone, still has a real-world consequence (DNS delegation of an actual domain) that a throwaway resource (like Chapter 8's `.test` zone) doesn't — cost isn't the only axis that matters when deciding whether to build something for real versus conceptually.
+
+**Cost check:** Zero new spend this chapter — the most cost-conscious possible outcome, achieved by recognizing the infrastructure wasn't needed yet rather than by finding a cheaper way to build it anyway.

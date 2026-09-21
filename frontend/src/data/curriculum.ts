@@ -1233,6 +1233,47 @@ export const modules: Module[] = [
         azureConnection:
           "A real public zone (`azureops-lab.test`) was built with A/CNAME/TXT records and verified by querying Azure's own nameserver directly — `app.azureops-lab.test` resolved to `azureops-lb`'s real public IP. This is deliberately decoupled from `devopspk.online`, which stays untouched until Module 13's Front Door work is ready to actually delegate it — the same zone-creation pattern would apply then, just with the real domain and Front Door's endpoint as the target instead of a throwaway test zone and the Load Balancer's IP.",
       },
+      {
+        id: 'azure-front-door-concepts',
+        title: 'Azure Front Door concepts',
+        concept:
+          "Front Door is Azure's global edge network: anycast entry points on every continent, terminating TLS and routing L7 traffic to the nearest healthy *origin* (a region, an App Service, a Load Balancer's public IP, a storage static site, etc.), with built-in WAF, caching, and automatic failover between multiple origins in an origin group. Its entire value proposition assumes you have origins in more than one place worth routing between and users spread out geographically enough that edge proximity actually matters. A profile has endpoints (public hostnames), routes (path/domain -> origin group mapping), origin groups (the failover unit — Front Door health-probes each origin and stops sending traffic to unhealthy ones), and optionally a WAF policy attached at the edge, before traffic even reaches Azure's regional network.",
+        whyDevops:
+          "Recognizing when you DON'T need a piece of infrastructure yet is as important a DevOps skill as knowing how to build it. This project is genuinely single-region today (`azureops-vnet` only exists in `centralindia`) — Front Door's core value (multi-region failover, global edge proximity) doesn't apply until that changes, which is exactly why no real Front Door resource was built this chapter.",
+        handsOn: [
+          { label: 'No resource built this chapter — deliberately', code: '# Front Door needs a domain to be meaningful, and the only real domain\n# this project has (devopspk.online) is intentionally reserved for\n# Module 13, once there\'s an actual multi-region origin setup to route\n# between. Building it now would mean either touching that domain early\n# or building throwaway infrastructure that teaches configuration syntax\n# without the real failover scenario Front Door exists for.' },
+        ],
+        troubleshooting: [
+          'Reaching for Front Door "because it\'s the production-grade option" without a second region → if there\'s only one origin, Front Door adds cost and complexity for the same effective routing a regional Load Balancer/Application Gateway already provides; its differentiator is multi-origin failover and global edge presence, neither of which exists with a single origin.',
+        ],
+        interview: [
+          'What does Front Door provide that a regional Application Gateway does not?',
+          'Why would deploying Front Door in front of a single-region application not deliver its main value proposition?',
+          'What has to exist (architecturally) before Front Door is actually worth its cost?',
+        ],
+        azureConnection:
+          'Deliberately not built for this project yet — `devopspk.online` remains untouched, reserved for Module 13 once a genuine multi-region origin setup exists for Front Door to actually add value in front of, rather than being configured prematurely against a single origin.',
+      },
+      {
+        id: 'edge-alternatives-comparison',
+        title: 'Edge/CDN alternatives — cost-conscious comparison',
+        concept:
+          "Front Door isn't the only way to get edge/CDN/WAF capability, and it's rarely the first thing cost-conscious teams reach for. Four real options, in order of increasing cost and capability: (1) skip it entirely — if you're single-region, your regional Load Balancer/Application Gateway already serves every user, and an edge layer solves a problem you don't have; this is the correct default for most small/early-stage projects, not a compromise. (2) Cloudflare's free tier — CDN, basic WAF, DDoS protection, and DNS management, pointed at your existing origin via a CNAME/A record, at zero cost; extremely common in real startups specifically to avoid paying a cloud provider's own edge product before it's justified. (3) Azure Traffic Manager — DNS-level failover across regions only (no L7 proxying, no WAF, no caching), priced per DNS query with no fixed monthly base, genuinely cheaper than Front Door as a stepping stone once you ARE multi-region but don't need Front Door's full feature set. (4) Azure Front Door — full global edge, once you're actually serving geographically distributed users across multiple regional origins and need automatic failover between them.",
+        whyDevops:
+          "This is a real, recurring build-vs-buy-vs-skip decision, and 'skip it, you don't need it yet' is a legitimate, common answer that a lot of infrastructure guidance skips over in favor of always recommending the most feature-complete (and expensive) option.",
+        handsOn: [
+          { label: 'Real cost figures gathered this session (approximate, check the pricing calculator for current numbers)', code: 'Azure Load Balancer (Standard):     ~$0.03/hr combined with its public IP   (~$21-22/mo continuous)\nSoftware WAF (Chapter 7):           $0 extra -- reuses existing VM compute\nAzure Public DNS zone (Chapter 8):  ~$0.50/mo base + per-query, negligible at this volume\nCloudflare free tier:               $0\nAzure Traffic Manager:              ~$0.54/million DNS queries, no fixed base\nAzure Front Door (Standard):        ~$35/mo base + ~$0.09/GB + per-request\nAzure Front Door (Premium):         ~$330/mo base + usage' },
+        ],
+        troubleshooting: [
+          "Assuming the cloud provider's own product is always the 'proper' or 'production-grade' choice → real production systems, including well-known ones, commonly run Cloudflare (or similar third-party edge providers) in front of AWS/Azure/GCP origins specifically for cost reasons; this is standard practice, not a shortcut.",
+        ],
+        interview: [
+          'Walk through the decision tree you\'d use to choose between no edge layer, Cloudflare free tier, Traffic Manager, and Front Door for a given project.',
+          'Why might a cost-conscious team choose a third-party CDN/WAF over their cloud provider\'s native offering?',
+        ],
+        azureConnection:
+          "This project's own decision history is the real example: Chapter 5 evaluated managed vs. software load balancing and chose to keep the managed option for comparison; Chapter 7 evaluated managed vs. software WAF and chose software (zero extra cost, reused existing VMs); this chapter evaluated Front Door vs. its alternatives and chose to build nothing yet, since the project doesn't have the multi-region architecture that would justify it — three different real cost/architecture decisions, three different honest outcomes, all logged rather than defaulting to \"use the managed Azure product\" every time.",
+      },
     ],
   },
 ]

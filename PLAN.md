@@ -110,6 +110,8 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** understand how Azure traffic flows from the internet to the application.
 
+**Status (2026-09-21):** In progress — Chapters 1-4 done (VNet/subnet, NSG, public/private connectivity, route tables), all built from scratch by hand (user running each `az` command directly rather than Claude executing them) into a real `azureops-vnet` (10.10.0.0/16, app-subnet 10.10.1.0/24 + gateway-subnet 10.10.2.0/24), separate from Phase 1's auto-created VM networking. Deliberately paced across multiple days at the user's request — resources are being kept running to study in depth, not torn down same-day. Chapters 5-10 (Load Balancer, Private Link, Application Gateway+WAF, Azure DNS, Front Door, network lab) remaining — Application Gateway+WAF and Front Door carry real hourly cost (~$0.25-0.45/hr) and will run for multiple days per the user's preference, a deliberate deviation from this plan's general "build, test, delete same day" cost discipline rule for those specific services. Full chapter content for 1-4 written in the frontend curriculum browser. See LEARNING_LOG.md "Module 6 — Azure Networking" for details.
+
 ### Module 7 — CI/CD with GitHub Actions
 
 1. CI vs CD and deployment lifecycle

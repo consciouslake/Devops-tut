@@ -323,3 +323,44 @@ az storage blob list --account-name azureopscopilotstore --container-name learni
 - `MSYS_NO_PATHCONV=1` matters for `az role assignment` commands too, not just `docker run` — any command with an absolute-looking argument starting with `/` (like `/subscriptions/...` scopes) is vulnerable to Git Bash's automatic Windows-path translation.
 
 **Cost check:** No new spend — this was pure IAM/shell-config work.
+
+---
+
+## Module 6 — Azure Networking (Chapters 1-4) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapters 1-4 — VNet/subnet/NIC, NSG, public/private connectivity, route tables/UDRs. Paced deliberately: user requested going in sequence, running every command themselves rather than Claude executing them, and keeping resources running for multiple days to study rather than the plan's usual same-day teardown for pricier services later in this module.
+
+**What I did:**
+- Built a real VNet from scratch (not Azure's auto-created default, unlike Phase 1's VM): `azureops-vnet` at `10.10.0.0/16`, with `app-subnet` (10.10.1.0/24) and `gateway-subnet` (10.10.2.0/24, reserved for Load Balancer/App Gateway chapters ahead).
+- Built and attached an NSG (`app-subnet-nsg`) to `app-subnet` from scratch: 80/443 allowed from Internet, SSH restricted to VirtualNetwork-only — deliberately designed this time rather than discovered-and-fixed reactively like Phase 1's NSG bug.
+- Verified `gateway-subnet` deliberately has no NSG yet — nothing in it is reachable from anywhere, illustrating that connectivity in Azure is opt-in per subnet, not inherited.
+- Created an empty Private DNS zone (`azureops.internal`) staged for the later Private Link chapter — zero record sets, zero VNet links, intentionally inert for now.
+- Created a route table (`azureops-rt`) with an example UDR (0.0.0.0/0 -> a hypothetical virtual appliance at 10.10.2.10) but deliberately did NOT attach it to any subnet — attaching it would break outbound connectivity immediately since no real appliance exists at that IP; kept as a safe, inert illustration of a UDR's blast radius instead.
+- All commands were handed to the user to run directly in their own terminal rather than executed autonomously — a deliberate workflow choice for this module, matching their request to actually type/paste each command as part of learning it.
+- User also hit a PATH issue again on this branch — the terminal window predated the `.bash_profile` fix from Module 5's follow-up, so it needed one manual `source ~/.bash_profile` in that specific window; confirmed working afterward.
+
+**Commands used:**
+```bash
+az network vnet create --resource-group azureops-copilot-rg --name azureops-vnet \
+  --address-prefix 10.10.0.0/16 --subnet-name app-subnet --subnet-prefix 10.10.1.0/24 --location centralindia
+az network vnet subnet create --resource-group azureops-copilot-rg --vnet-name azureops-vnet \
+  --name gateway-subnet --address-prefix 10.10.2.0/24
+
+az network nsg create --resource-group azureops-copilot-rg --name app-subnet-nsg --location centralindia
+az network nsg rule create ... --name Allow-HTTP-HTTPS --priority 100 --destination-port-ranges 80 443
+az network nsg rule create ... --name Allow-SSH-VNetOnly --priority 110 --source-address-prefixes VirtualNetwork --destination-port-ranges 22
+az network vnet subnet update --resource-group azureops-copilot-rg --vnet-name azureops-vnet \
+  --name app-subnet --network-security-group app-subnet-nsg
+
+az network private-dns zone create --resource-group azureops-copilot-rg --name azureops.internal
+
+az network route-table create --resource-group azureops-copilot-rg --name azureops-rt --location centralindia
+az network route-table route create --resource-group azureops-copilot-rg --route-table-name azureops-rt \
+  --name force-through-appliance --address-prefix 0.0.0.0/0 \
+  --next-hop-type VirtualAppliance --next-hop-ip-address 10.10.2.10
+```
+
+**What broke / what I learned:**
+- A profile fix applied mid-session (Module 5's `.bash_profile` change) only affects terminal windows opened *after* the fix — an already-open window keeps its stale environment until manually re-sourced or the window is closed and reopened.
+
+**Cost check:** VNet, subnets, NSG, route table, and Private DNS zone are all free — no billable resources created in Chapters 1-4. Chapters 5+ (Load Balancer, Application Gateway+WAF, Front Door) introduce real cost and are being kept running for multiple days per explicit user preference, a deliberate deviation from this project's usual same-day-teardown discipline for pricier services.

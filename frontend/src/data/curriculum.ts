@@ -1048,10 +1048,98 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'azure-networking',
+    number: 6,
+    mono: 'VN',
+    title: 'Azure Networking',
+    outcome: 'Understand how Azure traffic flows from the internet to the application.',
+    chapters: [
+      {
+        id: 'vnet-subnet-nic',
+        title: 'VNet and subnet',
+        concept:
+          "A VNet is a private, isolated network within a region — its address space (CIDR block) is entirely your choice, not assigned by Azure. Subnets partition that address space into smaller ranges, each able to host resources with independent NSGs, route tables, and service associations. A NIC (network interface) is what actually attaches a VM to a subnet and gets an IP; a VM can have multiple NICs on different subnets, though most don't need to. Unlike Phase 1's VM (which used Azure's auto-created default VNet/subnet), this module builds the network first, deliberately, before anything runs on it.",
+        whyDevops:
+          "Address space design done carelessly early causes real pain later — overlapping ranges block VNet peering, undersized subnets run out of IPs as a fleet grows. Designing it once, correctly, up front (as Module 3's CIDR chapter set up the math for) avoids a re-architecture later.",
+        handsOn: [
+          { label: 'The VNet actually built this session', code: 'az network vnet create --resource-group azureops-copilot-rg --name azureops-vnet \\\n  --address-prefix 10.10.0.0/16 --subnet-name app-subnet --subnet-prefix 10.10.1.0/24 \\\n  --location centralindia\naz network vnet subnet create --resource-group azureops-copilot-rg --vnet-name azureops-vnet \\\n  --name gateway-subnet --address-prefix 10.10.2.0/24' },
+        ],
+        troubleshooting: [
+          'Two VNets can\'t be peered → their address spaces overlap; peering requires non-overlapping CIDR ranges between the two VNets, checked at peering-creation time.',
+        ],
+        interview: [
+          'Why design a VNet\'s address space deliberately instead of accepting whatever default Azure suggests?',
+          'What\'s the practical difference between a VNet and a subnet in terms of what settings attach to each?',
+        ],
+        azureConnection:
+          "`azureops-vnet` (10.10.0.0/16) with `app-subnet` (10.10.1.0/24, for the application) and `gateway-subnet` (10.10.2.0/24, reserved for the Load Balancer/App Gateway chapters coming next) — deliberately separate from Phase 1's auto-created `azureops-vm01VNET`, which stays as-is and untouched.",
+      },
+      {
+        id: 'nsg-detailed',
+        title: 'NSG',
+        concept:
+          "Building on Module 3's firewall concept: an NSG's rules are evaluated in priority order (lowest number first), and the first matching rule wins — an explicit Allow at priority 100 beats a Deny at priority 200 for traffic matching both. Every NSG has three unremovable default rules at priority 65000+ (allow VNet-internal traffic, allow Azure Load Balancer health probes, deny everything else) that apply only if nothing more specific matches first. An NSG can attach to a subnet (affecting everything in it) or a specific NIC (affecting just that one resource) — both can be active simultaneously, and traffic must pass both to get through.",
+        whyDevops:
+          "Priority-ordering mistakes are a common real bug: a broad allow rule at a low priority number can accidentally short-circuit a more specific deny meant to override it later — reading NSG rules by priority order, not just by name, is the actual skill.",
+        handsOn: [
+          { label: 'The NSG actually built and attached this session', code: 'az network nsg create --resource-group azureops-copilot-rg --name app-subnet-nsg --location centralindia\naz network nsg rule create ... --name Allow-HTTP-HTTPS --priority 100 --destination-port-ranges 80 443\naz network nsg rule create ... --name Allow-SSH-VNetOnly --priority 110 --source-address-prefixes VirtualNetwork --destination-port-ranges 22\naz network vnet subnet update --resource-group azureops-copilot-rg --vnet-name azureops-vnet --name app-subnet --network-security-group app-subnet-nsg' },
+        ],
+        troubleshooting: [
+          'Traffic unexpectedly blocked despite a rule that should allow it → check for a lower-priority-number rule that matches first and denies; the first match wins, rule order (not just existence) matters.',
+        ],
+        interview: [
+          'If a subnet-level NSG allows a port but a NIC-level NSG on the same VM denies it, what happens?',
+          'What are the three default rules every NSG has, and why can\'t they be deleted?',
+        ],
+        azureConnection:
+          '`app-subnet-nsg` now enforces exactly Phase 1\'s NSG pattern but built deliberately from the start rather than starting wide-open and getting fixed reactively: 80/443 open to the internet, SSH restricted to VNet-only — `gateway-subnet` intentionally has no NSG yet, meaning nothing there is reachable at all until a later chapter changes that.',
+      },
+      {
+        id: 'public-private-connectivity',
+        title: 'Public/private connectivity',
+        concept:
+          "A resource with only a private IP is reachable within its VNet (and anything peered/connected to it) but has no direct internet inbound path — outbound still works via the VNet's default routing through NAT. A public IP makes a resource directly internet-reachable, subject to whatever NSG rules apply. The absence of a public IP is not itself a security boundary — anything else on the same VNet with the right NSG rules can still reach it; true isolation requires NSGs (or Private Link, for platform services) doing the actual enforcement.",
+        whyDevops:
+          "\"It doesn't have a public IP so it's secure\" is a common but incomplete assumption — VNet-internal traffic still needs deliberate NSG rules if you want to restrict it, exactly like `gateway-subnet`'s current state: private, but not yet actually locked down because nothing has defined what should and shouldn't reach it.",
+        handsOn: [
+          { label: 'Verified this session', code: '# app-subnet: has NSG, will have a public-facing LB later\n# gateway-subnet: no NSG yet, no public IP, nothing deployed -- private by omission, not by design yet\naz network vnet subnet show --resource-group azureops-copilot-rg --vnet-name azureops-vnet --name gateway-subnet --query "{name:name, nsg:networkSecurityGroup}"' },
+        ],
+        troubleshooting: [
+          'A resource with no public IP is still reachable from an unexpected source → check what else shares its VNet (or a peered VNet) — private doesn\'t mean isolated from everything, only from the direct public internet.',
+        ],
+        interview: [
+          'Why isn\'t "no public IP" by itself a sufficient security control?',
+          'What actually enforces isolation between two subnets in the same VNet if both are private?',
+        ],
+        azureConnection:
+          'Also created a Private DNS zone (`azureops.internal`) this session, staged for the Private Link chapter later — currently has zero record sets and zero VNet links, i.e. it exists but does nothing yet, deliberately, until Private Link work actually needs it.',
+      },
+      {
+        id: 'route-tables-udr',
+        title: 'Route tables',
+        concept:
+          "Every subnet has system routes by default (VNet-local traffic routes directly, internet-bound traffic routes out via Azure's default gateway) — invisible, automatic, and usually sufficient. A User-Defined Route (UDR) overrides this for specific address ranges, most commonly to force traffic through a network virtual appliance (firewall, proxy) instead of going straight to its normal next hop. A route table is created independently, populated with routes, and then explicitly associated with a subnet — creating one has zero effect until it's attached.",
+        whyDevops:
+          "UDRs are how traffic gets forced through inspection points (a firewall, a proxy) in more locked-down network designs — and also a classic source of \"why can't this VM reach the internet anymore\" when a 0.0.0.0/0 route points somewhere that isn't actually configured to forward traffic.",
+        handsOn: [
+          { label: 'Built but deliberately not attached this session', code: 'az network route-table create --resource-group azureops-copilot-rg --name azureops-rt --location centralindia\naz network route-table route create --resource-group azureops-copilot-rg --route-table-name azureops-rt \\\n  --name force-through-appliance --address-prefix 0.0.0.0/0 \\\n  --next-hop-type VirtualAppliance --next-hop-ip-address 10.10.2.10' },
+        ],
+        troubleshooting: [
+          'A VM suddenly loses internet connectivity after a networking change → check for a newly-associated route table with a 0.0.0.0/0 UDR pointing at a next hop that isn\'t actually a working appliance — this is intentionally what the example route in this project would do if attached without a real appliance at 10.10.2.10.',
+        ],
+        interview: [
+          'What does creating a route table alone actually change, before it\'s associated with any subnet?',
+          'Why would you route 0.0.0.0/0 through a virtual appliance instead of letting Azure\'s default internet route handle it?',
+        ],
+        azureConnection:
+          "`azureops-rt` exists with a `force-through-appliance` route (0.0.0.0/0 -> 10.10.2.10) but was deliberately left unattached to any subnet — attaching it would break outbound connectivity immediately since no real appliance listens at that IP, a live illustration of a UDR's blast radius kept safely theoretical for now.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
-  { number: 6, title: 'Azure Networking', outcome: 'Understand how Azure traffic flows from the internet to the application.' },
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },
   { number: 8, title: 'Infrastructure as Code with Terraform', outcome: 'Provision and change Azure infrastructure safely through code.' },
   { number: 9, title: 'Kubernetes Fundamentals', outcome: 'Understand the core Kubernetes control model before using AKS.' },

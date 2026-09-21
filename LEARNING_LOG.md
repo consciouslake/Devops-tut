@@ -209,3 +209,38 @@ netstat -ano | grep LISTENING | grep -E ":8000|:6379|:6333|:5173"
 - `nslookup` timed out against the first resolver(s) before succeeding — a real, live example of DNS resolver fallback behavior rather than a hypothetical one.
 
 **Cost check:** No new Azure spend — all diagnostics run against public internet targets (github.com) and the local docker-compose stack.
+
+---
+
+## Module 4 — Docker — 2026-09-21
+
+**Plan item(s):** Module 4, all 10 chapters — why containers exist, images/layers, Dockerfile, storage/networking, config/secrets, Compose, debugging, registry, image security, containerize-the-project synthesis.
+
+**What I did:**
+- Found a real, live security bug before writing any chapter content: `backend/Dockerfile` uses `COPY . .` with no `.dockerignore`, so `backend/.env` (containing the actual Gemini API key) was verified — via `docker run --rm devops-tut-backend ls -la /app/` — to be physically present inside the built image, not just theoretically at risk.
+- Confirmed it was never committed to git history (`git log --all -- backend/.env` returned nothing) — this was purely a Docker build-context leak, separate from the gitleaks work in Module 2.
+- Fixed it: added `backend/.dockerignore` (excludes `.env`, `.git/`, caches, keeps `.env.example`) and `frontend/.dockerignore` (excludes `node_modules/`, `dist/`, `.git/`).
+- Rebuilt the backend image and reverified — only `.env.example` present, `.env` gone.
+- Confirmed the app still works correctly after the fix: restarted the backend container, `curl localhost:8000/health` returned `{"status":"UP"}`, proving `docker-compose.yml`'s `env_file:` injection at *runtime* was always the actual source of config, not the file baked into the image.
+- Verified other things were already done right rather than assuming: `backend/Dockerfile` runs as non-root (`docker run ... whoami` → `appuser`, not `root`), `frontend/Dockerfile` is a genuine multi-stage build (node build stage discarded, only compiled `dist/` copied into the nginx runtime stage), dependency-install-before-copy layer ordering is correct in both.
+- Wrote full chapter content for all 10 chapters into the frontend curriculum browser, using this session's real findings (the .env leak, the frontend stale-build bug from Phase 1, the appuser non-root setup) as the concrete examples.
+
+**Commands used:**
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm devops-tut-backend ls -la /app/    # found .env inside the image
+git log --all --oneline -- backend/.env                              # confirmed never in git history
+
+# fix
+# (created backend/.dockerignore and frontend/.dockerignore)
+docker compose build backend
+MSYS_NO_PATHCONV=1 docker run --rm devops-tut-backend ls -la /app/    # reverified: only .env.example
+docker compose up -d backend
+curl localhost:8000/health                                           # {"status":"UP"}
+MSYS_NO_PATHCONV=1 docker run --rm devops-tut-backend whoami          # appuser, confirmed non-root
+```
+
+**What broke / what I learned:**
+- Git-bash on Windows silently mangles absolute-looking paths like `/app/` into Windows paths (e.g. `C:/Program Files/Git/app/`) when passed to Docker; `MSYS_NO_PATHCONV=1` before the command disables that translation — needed for any `docker run ... /some/absolute/path` command in this environment.
+- A `.env` file being excluded from *git* (via `.gitignore`) says nothing about whether it's excluded from a *Docker build context* — they're two entirely separate exclusion mechanisms (`.gitignore` vs `.dockerignore`) that must both be set up independently. This project had one but not the other.
+
+**Cost check:** No new Azure spend — purely local Docker work.

@@ -76,6 +76,8 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** package, run, debug, and publish applications as containers.
 
+**Status (2026-09-21):** Done — all 10 chapters, including a real security bug found and fixed live: `backend/Dockerfile`'s `COPY . .` had no `.dockerignore`, so `backend/.env` (real Gemini API key) was actually baked into the built image (verified with `docker run ... ls /app/`). Added `.dockerignore` to both `backend/` and `frontend/`, rebuilt, reverified only `.env.example` remained, confirmed `/health` still returned `{"status":"UP"}` afterward since compose injects real config via `env_file` at runtime. Confirmed non-root (`appuser`) execution, multi-stage frontend build, and correct compose networking/volumes were already done right. Full chapter content written in the frontend curriculum browser. See LEARNING_LOG.md "Module 4 — Docker" for details.
+
 ### Module 5 — Azure Fundamentals
 
 1. Azure global infrastructure: regions, zones, geography

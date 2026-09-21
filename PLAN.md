@@ -170,7 +170,15 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 - Verified for real, not assumed: `kubectl get nodes` showed all 3 `Ready` with `control-plane,etcd` roles; deployed a real 3-replica workload, confirmed the scheduler spread one pod per node automatically; **stopped k3s on one node to simulate a real failure** — confirmed the API server stayed responsive (etcd quorum survived on 2/3 nodes) and new scheduling still worked; restarted the node and confirmed full recovery.
 - Zero new Azure compute cost — reused `app-vm1`/`app-vm2` (Module 6) and `azureops-vm01` (Phase 1), all already-paid-for VMs.
 
-Chapters 6-11 (ConfigMaps/Secrets, Namespaces/RBAC, health probes, Ingress, rolling updates, troubleshooting) remaining. Full chapter content for 1-5 in the frontend curriculum browser. See LEARNING_LOG.md "Module 8" for full detail.
+**Module 8 COMPLETE — all 11 chapters**, every one built and verified for real on the live 3-node cluster:
+- **Ch 6** (ConfigMaps/Secrets): real objects, confirmed a Secret is base64-encoded (not encrypted) by decoding one directly.
+- **Ch 7** (Namespaces/RBAC): a real ServiceAccount + scoped Role + RoleBinding, permission boundary tested with `kubectl auth can-i` (allowed in-scope, denied for an ungranted verb, denied in a different namespace) — not just described.
+- **Ch 8** (health probes/resources): a genuine liveness-probe restart (verified via events), and a real OOMKill that took **three attempts** to demonstrate correctly — first a memory limit too low for container init itself, then discovered `/dev/shm` has its own independent size cap separate from the pod's cgroup memory limit (writing to it doesn't test the limit at all), finally succeeded with real process-heap allocation.
+- **Ch 9** (Ingress): a real public-internet `curl` (from outside the cluster entirely, via `azureops-vm01`'s public IP) through Traefik → Service → pod, confirmed alternating between both replicas — genuine external L7 routing, not `kubectl`-only verification.
+- **Ch 10** (rolling updates/rollback): a real successful update, a real broken update (bad image tag, correctly stuck in `ImagePullBackOff` while all 3 old healthy pods stayed running), and a real `kubectl rollout undo` recovering cleanly — closes the loop Module 7 Chapter 11 could only describe conceptually.
+- **Ch 11** (troubleshooting): synthesized from the module's own real incidents rather than staged — a container-name assumption that silently broke an image update, the two failed OOM attempts, and the intentionally-broken rollout, all diagnosed from actual `describe`/`logs`/status output.
+
+Full chapter content for all 11 chapters in the frontend curriculum browser. See LEARNING_LOG.md "Module 8" for full detail.
 
 ### Module 9 — Azure Kubernetes Service (AKS)
 

@@ -628,10 +628,221 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'docker',
+    number: 4,
+    mono: 'DK',
+    title: 'Docker',
+    outcome: 'Package, run, debug, and publish applications as containers.',
+    chapters: [
+      {
+        id: 'why-containers',
+        title: 'Why containers exist',
+        concept:
+          "A container packages an application with everything it needs to run (dependencies, runtime, config) into one portable unit, isolated from the host using Linux kernel features (namespaces for isolation, cgroups for resource limits) rather than full hardware virtualization. Unlike a VM, containers share the host's kernel, which is why they start in milliseconds and use a fraction of the overhead — but also why a Linux container can't run natively on a different kernel (hence Docker Desktop on Windows/Mac runs a hidden Linux VM underneath).",
+        whyDevops:
+          '"Works on my machine" is largely a solved problem once the machine\'s entire runtime environment ships as the artifact instead of being separately reproduced by every developer and every server.',
+        handsOn: [
+          { label: 'See the isolation and speed', code: 'docker run --rm python:3.11-slim python3 --version\ntime docker run --rm alpine echo hi' },
+        ],
+        troubleshooting: [
+          'A container behaves differently than the same app run directly on the host → check base image differences first (Alpine vs Debian have different libc, package availability) before assuming it\'s a Docker-specific bug.',
+        ],
+        interview: [
+          'What\'s the fundamental difference between a container and a VM?',
+          'Why can a container start in milliseconds when a VM takes tens of seconds?',
+        ],
+        azureConnection:
+          "This project's whole stack (FastAPI backend, React frontend via nginx, Redis, Qdrant) runs as four containers via one `docker compose up` — the same images later get pushed to Azure Container Registry and run on a VM/VMSS/AKS with zero code changes.",
+      },
+      {
+        id: 'images-layers',
+        title: 'Images and layers',
+        concept:
+          "An image is a read-only template built from a stack of layers, each corresponding to one Dockerfile instruction. Layers are cached and shared — if two images share the same base and early instructions, Docker reuses those layers instead of rebuilding them, which is why instruction *order* in a Dockerfile matters for build speed (put rarely-changing steps like dependency installs before frequently-changing steps like copying source code). A registry (Docker Hub, Azure Container Registry) stores and distributes images by name:tag.",
+        whyDevops:
+          "Badly-ordered Dockerfiles cause slow CI builds because every code change invalidates and rebuilds every layer after it. This is a five-minute fix with a large payoff once you understand caching.",
+        handsOn: [
+          { label: 'Inspect layers', code: 'docker history devops-tut-backend\ndocker image ls' },
+        ],
+        troubleshooting: [
+          'Build takes forever even for a one-line code change → dependency install (`pip install`/`npm install`) is probably placed after `COPY . .` instead of before it, invalidating the cached dependency layer on every build.',
+        ],
+        interview: [
+          'Why does instruction order in a Dockerfile affect build speed?',
+          'What makes an image layer get invalidated and rebuilt?',
+        ],
+        azureConnection:
+          "`backend/Dockerfile` already orders this correctly: `COPY requirements.txt` + `pip install` happens before `COPY . .`, so editing `main.py` doesn't force a slow dependency reinstall on every build.",
+      },
+      {
+        id: 'dockerfile',
+        title: 'Dockerfile',
+        concept:
+          'FROM sets the base image. COPY brings files from the build context into the image. RUN executes a command at build time (installing packages, creating users). ENV sets environment variables baked into the image. EXPOSE documents (doesn\'t open) a port the container listens on. CMD sets the default command when the container starts (overridable at `docker run`), vs ENTRYPOINT which is harder to override, intended for the container\'s fixed "main" process. Multi-stage builds (`FROM ... AS build`, then a fresh `FROM` that copies only the built artifacts) let you use heavy build tools without shipping them in the final image.',
+        whyDevops:
+          "Reading someone else's Dockerfile fluently, and writing a minimal, secure one yourself, is a core daily skill — nearly every service in a modern stack ships this way.",
+        handsOn: [
+          { label: 'Compare the project\'s two real Dockerfiles', code: 'cat backend/Dockerfile    # single-stage, slim Python base\ncat frontend/Dockerfile   # multi-stage: node build -> nginx runtime' },
+        ],
+        troubleshooting: [
+          '`EXPOSE 8000` in the Dockerfile but the port isn\'t reachable → EXPOSE is documentation only, it doesn\'t publish anything; the actual publish happens with `docker run -p` or a compose `ports:` mapping.',
+        ],
+        interview: [
+          'What\'s the difference between CMD and ENTRYPOINT?',
+          'Why use a multi-stage build instead of just installing build tools in the final image and not worrying about it?',
+        ],
+        azureConnection:
+          "`frontend/Dockerfile` is a real multi-stage build: stage one (`node:20-alpine`) runs `npm install` + `npm run build`, stage two (`nginx:1.27-alpine`) copies only the compiled `dist/` output — Node, npm, and all dev dependencies never exist in the final image at all.",
+      },
+      {
+        id: 'storage-networking',
+        title: 'Storage and networking',
+        concept:
+          "A volume is Docker-managed persistent storage that survives container restarts/recreation (unlike the container's own writable layer, which is discarded when the container is removed) — Qdrant's data lives in a named volume so re-running `docker compose up` doesn't lose ingested vectors. A bind mount maps a host path directly into the container (useful for local dev hot-reload, not used in this project's images). Docker Compose creates a private bridge network per project by default; containers reach each other by service name as a DNS hostname (e.g. the backend connects to `redis://redis:6379`, not `localhost:6379`) — a container's own `localhost` only refers to itself.",
+        whyDevops:
+          '"Why can\'t my backend container reach Redis on localhost" is one of the most common early Docker confusions — understanding that each container has its own network namespace resolves it immediately.',
+        handsOn: [
+          { label: 'See the private network in action', code: 'docker compose exec backend python3 -c "import socket; print(socket.gethostbyname(\'redis\'))"' },
+          { label: 'Check the persistent volume', code: 'docker volume ls | grep qdrant' },
+        ],
+        troubleshooting: [
+          'Backend can\'t connect to `redis://redis:6379` → confirm both containers are on the same compose network (`docker network ls`, `docker network inspect`) and that the service name in the connection string matches the compose service name exactly.',
+          'Qdrant data disappears after `docker compose down` → `down` alone keeps named volumes; `docker compose down -v` deletes them — the `-v` flag is the actual data-loss trigger, not `down` itself.',
+        ],
+        interview: [
+          'Why does a container reach another container by service name instead of localhost?',
+          'What\'s the difference between a volume and a bind mount?',
+        ],
+        azureConnection:
+          '`docker-compose.yml`\'s `QDRANT_HOST: qdrant` and `REDIS_URL: redis://redis:6379/0` environment values are exactly this DNS-by-service-name mechanism — the same pattern Kubernetes Services provide later in Module 9/10, just at a smaller scale.',
+      },
+      {
+        id: 'config-secrets',
+        title: 'Configuration',
+        concept:
+          "Environment variables are the standard way to inject runtime config into a container without baking it into the image — `docker-compose.yml`'s `environment:` and `env_file:` keys both do this. Critically, environment variables and files copied into an image are NOT equivalent from a security standpoint: `env_file` injects values at container *start* time, never touching the image itself, while a file grabbed by `COPY` becomes part of the image's permanent layer history — recoverable by anyone who can pull the image, even after a later layer deletes it.",
+        whyDevops:
+          'This exact distinction was a real, live bug in this project — worth understanding precisely rather than just "secrets are bad in Dockerfiles" as a vague rule.',
+        handsOn: [
+          { label: 'Reproduce and verify the fix from this session', code: 'MSYS_NO_PATHCONV=1 docker run --rm devops-tut-backend ls -la /app/\n# should show .env.example only, never .env' },
+        ],
+        troubleshooting: [
+          'A secret ends up inside an image despite never being explicitly referenced → check for a bare `COPY . .` with no `.dockerignore` — it silently includes everything in the build context, including `.env` files, `.git/`, and anything else sitting in the directory.',
+        ],
+        interview: [
+          'Why is baking a secret into an image worse than passing it as a runtime environment variable, even if both end up "in the container" in some sense?',
+          'If a secret was accidentally baked into an image layer and then deleted in a later layer, is it actually gone? Why or why not?',
+        ],
+        azureConnection:
+          "Found and fixed live in this session: `backend/Dockerfile`'s `COPY . .` had no `.dockerignore`, so `backend/.env` (real Gemini API key) was verified present inside the built image (`docker run ... ls /app/` showed `.env` literally sitting there). Added `.dockerignore` excluding `.env`/`.git`/caches, rebuilt, and re-verified only `.env.example` remained — the app still worked correctly afterward since `docker-compose.yml` injects the real values via `env_file` at runtime, not via the image.",
+      },
+      {
+        id: 'compose',
+        title: 'Compose',
+        concept:
+          "Docker Compose defines a multi-container application in one YAML file: services, their images/build contexts, networking, volumes, and startup dependencies. `depends_on` controls *start order* but not readiness — a database container starting doesn't mean it's ready to accept connections yet, which is why real health checks (not just depends_on) matter for anything with a startup delay. `docker compose up -d --build` rebuilds changed images and starts everything; individual services can be rebuilt/restarted without touching the rest of the stack.",
+        whyDevops:
+          "Compose is the local-dev equivalent of what Kubernetes manifests do in production — same underlying concepts (services, networking, dependencies) at a much smaller, single-host scale.",
+        handsOn: [
+          { label: 'The actual daily commands used in this project', code: 'docker compose up -d --build backend    # rebuild + restart just one service\ndocker compose ps\ndocker compose logs -f backend' },
+        ],
+        troubleshooting: [
+          'Backend container starts before Redis/Qdrant are actually ready to accept connections, crashes → `depends_on` alone only waits for the container process to start, not for the service inside it to be ready; add a proper health check or connection-retry logic in the app itself.',
+          'Edited source code but the container still runs old code → compose doesn\'t auto-rebuild; `docker compose up -d --build <service>` is required, exactly what happened when the frontend kept serving a 12-hour-stale build earlier this session.',
+        ],
+        interview: [
+          'What does `depends_on` actually guarantee, and what does it NOT guarantee?',
+          'Why might `docker compose restart` not be enough after a code change?',
+        ],
+        azureConnection:
+          "This exact gap caused a real bug earlier in this project: the frontend container kept serving a stale build on port 5173 after source changes, because `docker compose up -d --build frontend` (rebuild) is a different command from `docker compose restart frontend` (just restarts the existing image) — the fix each time was rebuilding, not restarting.",
+      },
+      {
+        id: 'debugging',
+        title: 'Container debugging',
+        concept:
+          '`docker ps` lists running containers; `docker logs <container>` (or `-f` to follow) shows stdout/stderr, the container equivalent of `journalctl`. `docker exec -it <container> sh` opens an interactive shell inside a running container for live inspection. `docker inspect` dumps full container metadata (network settings, mounts, env vars) as JSON. `docker stats` shows live CPU/memory usage per container. Because a container\'s writable layer is ephemeral, changes made via `exec` for debugging are lost on the next rebuild — useful for inspection, never for a permanent fix.',
+        whyDevops:
+          "This is Module 1's Linux troubleshooting toolkit, translated to the container world — same diagnostic instinct, different commands.",
+        handsOn: [
+          { label: 'The debugging loop', code: 'docker compose ps\ndocker compose logs -f backend\ndocker compose exec backend sh\ndocker stats --no-stream' },
+        ],
+        troubleshooting: [
+          '`docker exec` fails with "container not running" → the container likely crashed on startup; check `docker logs` first, exec only works on a live container.',
+        ],
+        interview: [
+          'How would you check why a container keeps restarting?',
+          'Why can\'t you rely on `docker exec` changes surviving a rebuild?',
+        ],
+        azureConnection:
+          "`docker compose ps` and `docker compose logs -f backend` are the commands actually used in this session to verify the backend restarted cleanly and `{\"status\":\"UP\"}` came back from `/health` after the `.dockerignore` fix.",
+      },
+      {
+        id: 'registry',
+        title: 'Registry',
+        concept:
+          "A registry stores and distributes images by `repository:tag`. Docker Hub is the public default; Azure Container Registry (ACR, Module 6) is a private registry inside your Azure subscription. Tags should be immutable and specific in any real pipeline — `latest` is fine for local dev but dangerous in production because it's a moving target that gives no way to know exactly what's running or roll back precisely; a commit SHA or semantic version tag is unambiguous.",
+        whyDevops:
+          "This is the handoff point between 'build' and 'deploy' in every CI/CD pipeline — Module 7's GitHub Actions work ends with exactly this: build, tag with the commit SHA, push to ACR.",
+        handsOn: [
+          { label: 'See current local image tags', code: 'docker image ls | grep devops-tut' },
+        ],
+        troubleshooting: [
+          'A deployed service is running an unexpected version → almost always a `:latest` tag somewhere in the chain; pin to a specific tag to make this class of bug impossible.',
+        ],
+        interview: [
+          'Why is tagging images `:latest` risky in a production pipeline?',
+          'What information does an image tag need to carry to make a rollback reliable?',
+        ],
+        azureConnection:
+          "Module 6 pushes `devops-tut-backend`/`devops-tut-frontend` (currently only local `docker compose build` artifacts) to ACR for the first time — the `.dockerignore` fix from this module matters even more once these images leave the local machine.",
+      },
+      {
+        id: 'security',
+        title: 'Image security',
+        concept:
+          "Running as a non-root user inside the container limits the blast radius if the application is compromised — a root process inside a container can still do meaningful damage even though container isolation limits it further. Minimal base images (slim/alpine variants) reduce the attack surface by shipping fewer packages that could carry vulnerabilities. Dependency/image scanning (Trivy, planned for Module 6) checks installed packages against known-CVE databases and can fail a build on critical findings, the container equivalent of gitleaks for secrets.",
+        whyDevops:
+          "A container running as root with a bloated base image is a much softer target than one running as an unprivileged user on a minimal base — this is cheap to get right from the start and expensive to retrofit later.",
+        handsOn: [
+          { label: 'Confirm the project already does this correctly', code: 'MSYS_NO_PATHCONV=1 docker run --rm devops-tut-backend whoami\n# should print "appuser", not "root"' },
+        ],
+        troubleshooting: [
+          'A container needs to bind to port 80/443 but runs as non-root → ports below 1024 require root by default on Linux; either use a higher port internally with a proxy in front (what this project does — nginx on 80 in its own container, backend on 8000), or grant the specific `CAP_NET_BIND_SERVICE` capability instead of running as root.',
+        ],
+        interview: [
+          'Why run a container process as a non-root user, given that container isolation already limits what it can touch?',
+          'What\'s the difference between scanning source dependencies (like `pip-audit`) and scanning a built container image?',
+        ],
+        azureConnection:
+          '`backend/Dockerfile` already creates and switches to `appuser` (`useradd --system --uid 10001` + `USER appuser`) before the app runs — Trivy scanning in Module 6 adds vulnerability detection on top of this already-correct non-root baseline.',
+      },
+      {
+        id: 'containerize-project',
+        title: 'Project — containerize AzureOps Copilot',
+        concept:
+          'This chapter has no new material — it\'s the synthesis of every chapter above, already done for this project: `backend/Dockerfile` (single-stage, non-root, correctly-ordered layers), `frontend/Dockerfile` (multi-stage, nginx runtime), `docker-compose.yml` (four services: backend, frontend, redis, qdrant, correct network/volume/dependency wiring), and `.dockerignore` on both (added this session after finding the secret-leak bug).',
+        whyDevops:
+          "Seeing all these concepts working together in one real, running stack — rather than in isolated toy examples — is what makes them stick.",
+        handsOn: [
+          { label: 'The whole stack, one command', code: 'docker compose up -d --build\ndocker compose ps\ncurl http://localhost:8000/health' },
+        ],
+        troubleshooting: [
+          'No new failure modes here — this chapter is the checkpoint that everything from this module works together, end to end.',
+        ],
+        interview: [
+          'Walk through this project\'s full container architecture: what runs where, how do the pieces reach each other, and what\'s persisted vs ephemeral?',
+        ],
+        azureConnection:
+          'This entire stack — four containers, one compose file — is what gets pushed to ACR and deployed to a VM in Module 6, then potentially to AKS in Module 10, without any of the application code itself changing.',
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
-  { number: 4, title: 'Docker', outcome: 'Package, run, debug, and publish applications as containers.' },
+  { number: 5, title: 'Azure Fundamentals', outcome: 'Navigate Azure and choose basic services deliberately.' },
   { number: 5, title: 'Azure Fundamentals', outcome: 'Navigate Azure and choose basic services deliberately.' },
   { number: 6, title: 'Azure Networking', outcome: 'Understand how Azure traffic flows from the internet to the application.' },
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },

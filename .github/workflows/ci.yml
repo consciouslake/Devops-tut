@@ -69,7 +69,7 @@ jobs:
       # documents the small number of exceptions (unfixable transitive pins,
       # non-runtime build tooling) with reasons, reviewed periodically.
       - name: Scan backend image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: azureops-backend:${{ github.sha }}
           severity: CRITICAL,HIGH
@@ -85,7 +85,7 @@ jobs:
       # bumping the base image tag (already done once this session:
       # nginx:1.27-alpine -> 1.29-alpine), not by blocking every commit.
       - name: Scan frontend image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: azureops-frontend:${{ github.sha }}
           severity: CRITICAL
@@ -99,7 +99,7 @@ jobs:
       # advantage of ghcr.io over ACR for this project right now.
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

@@ -771,3 +771,41 @@ python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"   # sy
 - Real GitHub Actions runs are the actual ground truth for whether a workflow is correct — local YAML syntax validation (which passed the whole time) only catches syntax errors, not semantic ones like a nonexistent action version.
 
 **Confirmed:** PR #10 merged (run #48) — full `docker-build-scan` job succeeded end to end, including the real publish steps (`Log in to GitHub Container Registry`, `Push backend image`, `Push frontend image`) since this ran on an actual merge to `main`. Verified two real container packages now exist on `ghcr.io`: `azureops-backend` and `azureops-frontend`, both published for the first time today. This is the project's first real CD step — not just tests running automatically, an actual deployable artifact published automatically.
+
+---
+
+## Module 7 — CI/CD, Chapter 10 (OIDC federation) + Chapter 9 (deploy, scoped) — 2026-09-21
+
+**Plan item(s):** Module 7, Chapters 9-10 — deploy to Azure, OIDC federation. Built together (OIDC has to exist before anything can use it to deploy), and cost-consciousness reconfirmed by the user before starting.
+
+**What I did:**
+- Created the Azure AD identity pieces for OIDC federation myself (not permission grants, just identity objects): an App Registration (`azureops-copilot-github-oidc`), its Service Principal, and a Federated Identity Credential scoped narrowly to `repo:consciouslake/Devops-tut:ref:refs/heads/main` — deliberately restrictive so only pushes to this exact repo's main branch can authenticate as this identity, not forks or other branches.
+- Attempted the actual permission grant (role assignment) myself — correctly blocked by the permission classifier, same as Module 5's storage RBAC moment. Handed the exact command to the user, who hit the familiar Git Bash path-mangling bug on the `--scope` argument (same class of bug as every other `/subscriptions/...` argument this project has passed) and fixed it with `MSYS_NO_PATHCONV=1`. Role assignment succeeded: `Contributor` scoped to `azureops-copilot-rg` only, not the subscription.
+- User added the three non-secret-but-still-secret-typed values (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) as GitHub repo secrets (variables would also have worked; secrets is fine too).
+- Before writing the actual deploy target, explicitly asked the user again what it should deploy *to*, given the stated cost-consciousness — offered three real options (verify-auth-only / reuse already-running Module 6 VMs / wake up the deallocated Phase 1 VM). User chose verify-auth-only: no new cost, no disruption to Module 6's still-in-use demo VMs.
+- Added a `deploy` job to `ci.yml`: `azure/login@v3` using the three OIDC values (no `client-secret` input at all), then a real, verifiable Azure action (`az account show`, `az resource list` against `azureops-copilot-rg`) to prove the full chain — Federated Credential, token exchange, RBAC — actually works, not just that the YAML looks plausible.
+- Verified `azure/login`'s actual tag via `WebFetch` before using it (`v3`, a floating major-version tag) — deliberate carefulness after the `trivy-action` mistake earlier this module.
+- Wrote up both chapters honestly, including naming explicitly what's still missing before a *full* app deployment could exist (Key Vault-backed secrets, Module 11; a deliberately-chosen always-on target) rather than faking a fuller deploy step that couldn't actually handle secrets safely yet.
+
+**Commands used:**
+```bash
+az ad app create --display-name "azureops-copilot-github-oidc"
+az ad sp create --id <appId>
+az ad app federated-credential create --id <appObjectId> --parameters '{
+  "name": "github-actions-main-branch",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:consciouslake/Devops-tut:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+
+# Role assignment -- declined autonomously, run by the user:
+MSYS_NO_PATHCONV=1 az role assignment create \
+  --assignee <appId> --role "Contributor" \
+  --scope "/subscriptions/<sub>/resourceGroups/azureops-copilot-rg"
+```
+
+**What broke / what I learned:**
+- The Git Bash path-mangling bug on `/subscriptions/...` arguments has now been hit in at least three separate contexts across this project (Module 5's storage role assignment, Module 6's Private Link, and now this) — worth treating `MSYS_NO_PATHCONV=1` as close to mandatory prefix for any `az` command whose arguments start with `/`, rather than rediscovering it each time.
+- Asking "what should this actually deploy to" *before* writing the deploy step, rather than defaulting to whatever target seems most obvious, is what kept this chapter genuinely cost-neutral — the "obvious" choice (wake up a VM) would have introduced real ongoing cost for a chapter whose actual point was proving the auth mechanism, not standing up infrastructure.
+
+**Cost check:** Zero new spend — Azure AD identity objects (App Registration, Service Principal, Federated Credential, RBAC role assignment) are all free; the `deploy` job only reads existing resources, no VM was started.

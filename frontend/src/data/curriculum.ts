@@ -1491,6 +1491,50 @@ export const modules: Module[] = [
         azureConnection:
           'A real cost-conscious decision made this session: asked directly why pay for ACR when GitHub already hosts the code, worked through the actual tradeoff (Private Endpoint + Managed Identity integration vs. $0 cost and simpler auth), and chose `ghcr.io` since neither of ACR\'s real advantages apply to this project\'s architecture yet. Tracked as a revisit point for when Module 9 (AKS) actually needs private-network image pulls — the same "defer until the architecture justifies it" pattern as the Load Balancer and Front Door decisions in Module 6.',
       },
+      {
+        id: 'oidc-federation',
+        title: 'OIDC federation and passwordless Azure authentication',
+        concept:
+          "A traditional Azure service principal secret is a long-lived password: stored in GitHub Secrets, valid until manually rotated, and a real liability if it ever leaks. OpenID Connect (OIDC) federation replaces it entirely: GitHub's own OIDC provider issues a short-lived token for each workflow run, and a Federated Identity Credential on an Azure AD App Registration is configured to trust tokens matching a specific `subject` — e.g. `repo:owner/repo:ref:refs/heads/main`. At runtime, GitHub's token gets exchanged for a real Azure AD access token, scoped to exactly that repo and branch, valid only for the run's duration. No secret exists anywhere at rest. Three pieces are required: the App Registration + Service Principal (the identity), the Federated Credential (the trust relationship — which GitHub workflows are allowed to authenticate as this identity), and an RBAC role assignment (what that identity is actually allowed to do once authenticated) — identity, trust, and permission are three separate, independently-configured layers.",
+        whyDevops:
+          "Eliminating stored secrets removes an entire class of incident (a leaked CI/CD credential with standing access) and removes the operational burden of rotation — this is genuinely standard practice for modern CI/CD to Azure/AWS/GCP now, not an advanced technique.",
+        handsOn: [
+          { label: 'The three real pieces, built this session', code: 'az ad app create --display-name "azureops-copilot-github-oidc"\naz ad sp create --id <appId>\naz ad app federated-credential create --id <appObjectId> --parameters \'{\n  "name": "github-actions-main-branch",\n  "issuer": "https://token.actions.githubusercontent.com",\n  "subject": "repo:consciouslake/Devops-tut:ref:refs/heads/main",\n  "audiences": ["api://AzureADTokenExchange"]\n}\'\n# role assignment (the permission layer) -- see below, deliberately not run autonomously' },
+          { label: 'The workflow side', code: "permissions:\n  id-token: write   # <- required, lets the job request an OIDC token at all\n  contents: read\nsteps:\n  - uses: azure/login@v3\n    with:\n      client-id: ${{ secrets.AZURE_CLIENT_ID }}\n      tenant-id: ${{ secrets.AZURE_TENANT_ID }}\n      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}\n      # note: no client-secret input at all -- that's the whole point" },
+        ],
+        troubleshooting: [
+          "`azure/login` fails with a federation/subject-mismatch error → the Federated Credential's `subject` must exactly match the workflow's actual trigger context; `repo:owner/repo:ref:refs/heads/main` only matches pushes to `main` specifically — a PR-triggered run has a different subject format (`repo:owner/repo:pull_request`) and needs its own separate federated credential if it also needs to authenticate.",
+          'A job with `azure/login` succeeds but a subsequent `az` command fails with an authorization error → login proving identity and RBAC granting permission are separate layers; a successful login only proves the trust relationship works, not that the identity can actually do anything yet.',
+          'Missing `permissions: id-token: write` on the job → without it, the job has no ability to request an OIDC token from GitHub at all, and `azure/login` fails immediately, before ever reaching Azure.',
+        ],
+        interview: [
+          'Walk through what actually happens, step by step, when a workflow using OIDC federation authenticates to Azure.',
+          'Why are identity (App Registration), trust (Federated Credential), and permission (role assignment) deliberately three separate configuration steps rather than one?',
+          'What would happen if the Federated Credential\'s subject were set to match any branch, not just main?',
+        ],
+        azureConnection:
+          'Built for real this session: `azureops-copilot-github-oidc` (App Registration + Service Principal), a Federated Credential trusting only `repo:consciouslake/Devops-tut:ref:refs/heads/main` (so forks or other branches cannot authenticate as this identity), and a `Contributor` role assignment scoped to `azureops-copilot-rg` only (not the whole subscription) — the role assignment itself was correctly declined when attempted autonomously, run by the user directly, the same pattern as Module 5\'s storage RBAC moment. Hit the same Git Bash path-mangling bug on the role assignment\'s `--scope` argument as every previous `/subscriptions/...` argument this project has passed — `MSYS_NO_PATHCONV=1` fixed it again.',
+      },
+      {
+        id: 'deploy-to-azure',
+        title: 'Deploy to Azure — scoped deliberately to proving the auth, not a full deployment',
+        concept:
+          "The `deploy` job runs `azure/login` (OIDC, no secret) then a real, verifiable Azure action — reading resources in `azureops-copilot-rg` — to prove the whole chain (Federated Credential -> token exchange -> RBAC-granted access) actually works end to end, not just that the YAML is syntactically plausible. A full production deployment (rolling out the newly-built images to a running VM/VMSS/AKS target) is deliberately NOT built in this chapter — it would need secrets management for the real app (`GEMINI_API_KEY` etc., which Module 11's Key Vault work hasn't happened yet) and a real target VM kept running (cost), neither of which this project has in place yet.",
+        whyDevops:
+          "Scoping a chapter's real, working example to what can be *honestly and completely* verified — rather than stubbing out a bigger deployment that can't actually be tested end to end yet — is itself the right instinct: a half-working deploy step that silently can't handle secrets is worse than an honestly-scoped one that fully works.",
+        handsOn: [
+          { label: 'What actually gets verified, for real, on every merge to main', code: 'az account show --query "{subscription:name, user:user.name, authType:user.type}"\naz resource list --resource-group azureops-copilot-rg --query "sort_by([], &name)[].{name:name, type:type}" -o table' },
+        ],
+        troubleshooting: [
+          'Tempted to consider this chapter "not really CD" since it doesn\'t deploy the app → it\'s an honest, scoped CD step (Azure resource state genuinely gets read using a live, workflow-issued credential) building toward a real deployment once the prerequisites (Module 11 Key Vault, a deliberately-chosen always-on target) exist — better than a deploy step that appears to work but can\'t actually handle secrets safely yet.',
+        ],
+        interview: [
+          'Why might a team deliberately scope a "deploy" pipeline step to verification only, before building the full deployment?',
+          'What still needs to exist before this project\'s `deploy` job could safely roll out the real application to a VM?',
+        ],
+        azureConnection:
+          "This closes the loop on Module 7's stated goal — a repeatable build-test-scan-publish-verify pipeline — while honestly flagging what's still needed for a full rollout: Key Vault-backed secrets (Module 11) and a deliberate choice of always-on deployment target, both explicitly deferred rather than faked.",
+      },
     ],
   },
 ]

@@ -1,0 +1,19 @@
+# Vulnerabilities deliberately accepted, with reasons — not silently ignored.
+# Review periodically; remove an entry once the underlying constraint is fixed upstream.
+
+# pyasn1 DoS CVEs: python-jose==3.4.0 (latest) pins pyasn1<0.5.0, capping it below
+# the fixed versions (0.6.3/0.6.4). No newer python-jose release relaxes this.
+# Real fix requires replacing python-jose with an actively maintained JWT library
+# (e.g. pyjwt) — tracked as a follow-up, out of scope for this CI/CD chapter.
+# Impact here: DoS via malformed ASN.1 input; this backend does not parse
+# arbitrary user-supplied ASN.1/BER data directly, so exploitability is low.
+CVE-2026-30922
+CVE-2026-59884
+CVE-2026-59885
+CVE-2026-59886
+
+# wheel / jaraco.context: pip's own build-time tooling bundled in the base
+# image, not application runtime code — not reachable via this app's attack
+# surface. Will clear automatically as the python:3.11-slim base image updates.
+CVE-2026-24049
+CVE-2026-23949

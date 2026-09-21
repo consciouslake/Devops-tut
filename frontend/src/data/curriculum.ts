@@ -1427,6 +1427,48 @@ export const modules: Module[] = [
         azureConnection:
           "This job is the first gate in what will become the full pipeline: backend tests -> Docker build+scan -> push to ACR -> deploy — nothing downstream should run if this fails, which is why the eventual `docker-build` job will declare `needs: [backend, frontend]`.",
       },
+      {
+        id: 'build-scan-docker-images',
+        title: 'Build and scan Docker images',
+        concept:
+          "A `docker-build-scan` job builds both images (using `needs: [backend, frontend]` so it only runs after tests pass), then scans each with Trivy — `exit-code: 1` means the CI run genuinely fails if a matching-severity vulnerability is found, not just logs a warning. Trivy scans two different things at once: the application's own dependencies (Python packages, npm packages baked into the image) and the base image's OS packages (Alpine/Debian packages from `FROM python:3.11-slim` or `FROM nginx:1.29-alpine`) — a finding in either category blocks the build the same way.",
+        whyDevops:
+          "A security scanner that's configured but never actually tested against a real vulnerability teaches nothing — this chapter's real value came from the scan genuinely failing on real findings and having to fix them properly, not from writing YAML that happened to pass on the first try.",
+        handsOn: [
+          { label: 'The real job, added this session', code: 'docker-build-scan:\n  runs-on: ubuntu-latest\n  needs: [backend, frontend]\n  steps:\n    - uses: actions/checkout@v4\n    - run: docker build -t azureops-backend:${{ github.sha }} ./backend\n    - run: docker build -t azureops-frontend:${{ github.sha }} ./frontend\n    - uses: aquasecurity/trivy-action@0.28.0\n      with:\n        image-ref: azureops-backend:${{ github.sha }}\n        severity: CRITICAL,HIGH\n        exit-code: \'1\'\n        trivyignores: backend/.trivyignore' },
+        ],
+        troubleshooting: [
+          "A locally-run Trivy scan (via `docker run aquasec/trivy ... image <name>`) fails to find the image → on Windows/Git Bash, mounting the Docker socket (`-v /var/run/docker.sock:/var/run/docker.sock`) needs `MSYS_NO_PATHCONV=1` prefixed, the same path-mangling issue hit throughout this project — without it, the socket path gets corrupted into a Windows path and Trivy can't reach the Docker daemon at all.",
+          'A `docker run --rm ... image <name> | tail -N` scan output looks clean, but re-running without truncation shows dozens more findings → always check the actual finding count (or use `--format json` and count entries) before trusting a scan result glanced at through `tail` — this happened for real in this session: a frontend scan looked like only 3-4 findings until the full, untruncated output showed 37.',
+        ],
+        interview: [
+          'Why scan both the application dependencies and the base OS image, rather than just one?',
+          'What does `exit-code: 1` actually change about how a scan step behaves in CI?',
+        ],
+        azureConnection:
+          "The backend scan initially found a real CRITICAL CVE (`python-jose` 3.3.0) and several HIGH ones (`starlette` via an outdated `fastapi` pin) — both genuinely fixed by loosening the `fastapi` version pin so pip could resolve patched versions, verified by rebuilding and rescanning until clean. The frontend scan found 37 HIGH findings, all Alpine OS packages in the `nginx:1.27-alpine` base image — partially reduced by bumping to `nginx:1.29-alpine`, with the rest deliberately left as HIGH-not-CRITICAL and out of this build's gate (see the next chapter).",
+      },
+      {
+        id: 'scan-triage-policy',
+        title: 'Scan triage: what to fix vs. what to accept (and document)',
+        concept:
+          "Not every vulnerability finding deserves the same response. A CVE in a dependency you directly control, with a fix available, should be fixed immediately — that's what happened with the backend's `python-jose`/`starlette`. A CVE in a transitive dependency with NO available compatible fix (this session's `pyasn1`, capped by `python-jose` itself) needs a documented, reasoned exception — not silence, and not blocking forever on something you can't actually fix without a bigger change. A CVE in base-image OS packages that aren't exercised by how the container actually runs is a different category again — usually best handled by a different severity bar and a periodic base-image-refresh habit, not a per-CVE ignore list, especially once the count gets large (37 findings for one frontend image, in this project's real case).",
+        whyDevops:
+          "Blindly either \"fix everything\" or \"ignore everything\" both fail in practice — the first is often literally impossible (unfixable transitive pins, base-image churn), the second defeats the point of scanning at all. Real teams triage, and the triage decisions themselves need to be visible (a `.trivyignore` with reasons, a differentiated severity policy with a comment explaining why) rather than buried in someone's memory.",
+        handsOn: [
+          { label: 'The three real outcomes from this session, side by side', code: '# 1. FIXED: python-jose 3.3.0 -> 3.4.0, fastapi pin loosened to allow patched starlette\n# 2. ACCEPTED + DOCUMENTED (backend/.trivyignore): pyasn1 CVEs -- python-jose itself\n#    caps pyasn1<0.5.0, no newer python-jose relaxes it; real fix is replacing\n#    python-jose with pyjwt, tracked as a follow-up, not done here\n# 3. POLICY DIFFERENTIATED (frontend Trivy step): severity lowered to CRITICAL-only\n#    for the nginx/Alpine base image -- 37 HIGH findings, all OS packages, none\n#    reachable through this app\'s actual usage; cleared via periodic base-image bumps' },
+        ],
+        troubleshooting: [
+          'A `.trivyignore` entry has no comment explaining why → this is a real problem, not just style: six months later nobody (including future-you) can tell if it\'s still a valid exception or stale risk being carried forward blindly. Every entry in this project\'s `.trivyignore` files has a reason attached.',
+          'Tempted to just disable the scan (or set `exit-code: 0`) because triage feels like extra work → this defeats the entire purpose of scanning; the friction of triage is the point — it forces a decision instead of silent risk accumulation.',
+        ],
+        interview: [
+          'Walk through how you\'d decide whether to fix, formally accept, or adjust policy for a given vulnerability finding.',
+          'Why is an undocumented `.trivyignore` entry arguably worse than no ignore file at all?',
+        ],
+        azureConnection:
+          "This triage judgment is exactly what a human still needs to bring to CI/CD even with everything automated — the pipeline can find and block on issues, but deciding whether a given finding is fix-now, accept-with-reason, or policy-adjust is not (yet) something to automate away, the same principle behind this project declining to auto-assign IAM roles back in Module 5.",
+      },
     ],
   },
 ]

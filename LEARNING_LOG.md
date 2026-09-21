@@ -364,3 +364,289 @@ az network route-table route create --resource-group azureops-copilot-rg --route
 - A profile fix applied mid-session (Module 5's `.bash_profile` change) only affects terminal windows opened *after* the fix — an already-open window keeps its stale environment until manually re-sourced or the window is closed and reopened.
 
 **Cost check:** VNet, subnets, NSG, route table, and Private DNS zone are all free — no billable resources created in Chapters 1-4. Chapters 5+ (Load Balancer, Application Gateway+WAF, Front Door) introduce real cost and are being kept running for multiple days per explicit user preference, a deliberate deviation from this project's usual same-day-teardown discipline for pricier services.
+
+---
+
+## Module 6 — Azure Networking, Chapter 5 (Load Balancer) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 5 — Azure Load Balancer, built and verified for real including failover.
+
+**What I did:**
+- Checked VM size/zone availability in `centralindia` before committing to a design, since Phase 1 hit repeated `SkuNotAvailable` errors there — found `Standard_B2s_v2` is zone-restricted (zones 1/2 blocked for this subscription) but zone 3 works; verified with a disposable test VM, then cleaned up its leftover NIC/NSG/disk (VM deletion doesn't cascade-delete attached resources).
+- Created two backend VMs (`app-vm1`, `app-vm2`) in `app-subnet`, zone 3, no public IPs — reachable only through the Load Balancer by design.
+- Built a Standard Load Balancer (`azureops-lb`) from scratch: Standard SKU zone-redundant public IP, frontend config, empty backend pool, an HTTP health probe on `/health:8000`, and a load-balancing rule (80 -> 8000).
+- Deployed the app to both VMs via `az vm run-command invoke` instead of SSH, since they intentionally have no public IP/SSH path — wrote the deploy script to a local file first (`deploy-app.sh`) rather than inlining nested heredocs into a `--scripts` string argument, since that level of nested quoting is fragile in Git Bash.
+- **Bug 1 — mangled health probe path:** `az network lb probe create --path /health` got Git-Bash-mangled into `C:/Program Files/Git/health` (visible only by checking `requestPath` in `az network lb probe show`), silently marking both backends unhealthy. The LB just timed out every request with no useful error. Fixed with `MSYS_NO_PATHCONV=1 az network lb probe update --path /health`.
+- **Bug 2 — real client traffic still blocked after fixing the probe:** Standard Load Balancer does not SNAT inbound traffic — the original client IP reaches the backend unchanged. The NSG only had an `AzureLoadBalancer`-source rule for port 8000 (covers health probes only); actual client requests arriving with `Internet` as the source were still blocked. Added an explicit `Internet` -> 8000 allow rule.
+- **Bug 3 — still blocked after both fixes:** used `az network nic list-effective-nsg` (checking the *full* `value[]` array, not just `value[0]`) and found each backend VM's NIC had its own auto-created NSG (`app-vm1NSG`/`app-vm2NSG`, SSH-only) stacked on top of the intended `app-subnet-nsg` — `az vm create` does this by default unless told not to, even when the target subnet already has an NSG. Both NSGs apply simultaneously; traffic must pass both. Removed the redundant NIC-level NSGs entirely.
+- After all three fixes: verified real load distribution (8 requests alternated between `app-vm1`/`app-vm2`), verified real failover (stopped `pyapp` on `app-vm1`, 8/8 requests rerouted to `app-vm2` within ~20s), verified automatic recovery (restarted it, both VMs back in rotation without any manual re-registration).
+- Updated the earlier NSG chapter's content with this real discovery rather than leaving it as a hypothetical interview question.
+
+**Commands used:**
+```bash
+# Confirmed VM size/zone availability
+az vm create ... --size Standard_B2s_v2 --zone 3 --location centralindia   # works
+az vm delete -g $RG -n lb-test-vm --yes --no-wait
+az network nic delete / az network nsg delete / az disk delete             # cleanup leftovers
+
+# Backend VMs, no public IP
+az vm create -g $RG -n app-vm1 --vnet-name azureops-vnet --subnet app-subnet --public-ip-address "" --zone 3 ...
+az vm create -g $RG -n app-vm2 ...
+
+# Load Balancer
+az network public-ip create --sku Standard --zone 1 2 3 --name azureops-lb-pip
+az network lb create --sku Standard --name azureops-lb --frontend-ip-name lb-frontend --backend-pool-name app-backend-pool
+az network lb probe create --protocol Http --port 8000 --path /health --interval 5 --threshold 2
+az network lb rule create --frontend-port 80 --backend-port 8000 --probe-name health-probe
+
+# Attach backend pool (had to discover actual ip-config name -- not "ipconfig1")
+IPCONFIG_NAME=$(az network nic show -n app-vm1VMNic --query "ipConfigurations[0].name" -o tsv)  # "ipconfigapp-vm1"
+az network nic ip-config address-pool add --nic-name app-vm1VMNic --ip-config-name "$IPCONFIG_NAME" \
+  --lb-name azureops-lb --address-pool app-backend-pool
+
+# Deploy app via RunCommand (no SSH path to these VMs)
+az vm run-command invoke -n app-vm1 --command-id RunShellScript --scripts @deploy-app.sh
+
+# Bug 1 fix
+MSYS_NO_PATHCONV=1 az network lb probe update --lb-name azureops-lb -n health-probe --path /health
+
+# Bug 2 fix
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-Internet-8000 --priority 105 \
+  --source-address-prefixes Internet --destination-port-ranges 8000
+
+# Bug 3 diagnosis and fix
+az network nic list-effective-nsg -n app-vm1VMNic --query "value[].{nsg:networkSecurityGroup.id}" -o table
+az network nic update -n app-vm1VMNic --remove networkSecurityGroup
+az network nsg delete -n app-vm1NSG
+
+# Failover verification
+az vm run-command invoke -n app-vm1 --scripts "sudo systemctl stop pyapp"
+for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-ip>; done   # 8/8 app-vm2
+az vm run-command invoke -n app-vm1 --scripts "sudo systemctl start pyapp"
+for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-ip>; done   # both again
+```
+
+**What broke / what I learned:**
+- `az network lb probe show`'s `requestPath` field is the ground truth for what a probe actually checks — never assume a `--path` argument landed correctly in a Git Bash environment without verifying the created resource's actual value.
+- Standard Load Balancer's lack of inbound SNAT is a real, non-obvious security/NSG design point: "the health probe passes" and "real traffic can reach the backend" are two genuinely different things requiring two different NSG rules (`AzureLoadBalancer` source vs `Internet` source).
+- `az network nic list-effective-nsg`'s `value[]` array can contain more than one NSG (NIC-level and subnet-level both, when both exist) — querying only `value[0]` gives an incomplete, misleading picture; this cost real debugging time before checking the full array.
+- `az vm create`'s default behavior of auto-creating a NIC-level NSG is easy to miss when a subnet-level NSG already exists and seems like it should be sufficient — worth explicitly suppressing in future VM creation commands for this project (not yet applied retroactively to Phase 1's `azureops-vm01`, which likely has the same redundant NIC-level NSG).
+- `basename`/nested-heredoc quoting inside a `--scripts` CLI argument is fragile in Git Bash; writing the script to a local file first and referencing it with `@filename` is far more reliable for anything beyond a one-liner.
+
+**Cost check:** `app-vm1`, `app-vm2` (Standard_B2s_v2 each), and `azureops-lb` (Standard SKU, ~$0.025/hr) plus its Standard public IP are now running and being kept up per the user's explicit multi-day-study preference — real, ongoing cost, worth checking Cost Management again in a few days.
+
+---
+
+## Module 6 — Azure Networking, Chapter 6 (Private Link) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 6 — Private endpoints and Private Link, built on the real storage account from Module 5.
+
+**What I did:**
+- Created a private DNS zone with Azure's exact reserved name for Storage blob (`privatelink.blob.core.windows.net`) — deliberately distinct from the generic `azureops.internal` zone staged in Chapter 3, since automatic DNS integration requires this specific naming convention per service type.
+- Linked the zone to `azureops-vnet`, created a private endpoint (`azureopscopilotstore-blob-pe`) in `gateway-subnet` targeting the storage account's blob sub-resource, and linked a DNS zone group to auto-create the A record.
+- Hit the same Git Bash path-mangling bug again, this time inside a `$(...)` command substitution result rather than a literal argument — `--private-connection-resource-id $SA_ID` got mangled even though `$SA_ID` itself was captured cleanly; fixed with `MSYS_NO_PATHCONV=1` on the consuming command.
+- Verified from inside the VNet (via `az vm run-command` on `app-vm1`) that `azureopscopilotstore.blob.core.windows.net` resolves to `10.10.2.4` (the private endpoint's IP), not a public address.
+- Disabled public network access on the storage account entirely, then tested access from both sides: internal request (through the private endpoint) got HTTP 409; external request (from the laptop, over the public internet) got HTTP 403. Both are real HTTP responses from Azure's service layer, not connection timeouts — this contradicted my own prediction that external access would simply time out. Corrected the assumption rather than forcing the narrative: "public network access disabled" means the service itself rejects the request, not that it becomes network-invisible or loses its public DNS presence.
+
+**Commands used:**
+```bash
+az network private-dns zone create --name privatelink.blob.core.windows.net
+az network private-dns link vnet create --zone-name privatelink.blob.core.windows.net \
+  --name azureops-vnet-link --virtual-network azureops-vnet --registration-enabled false
+
+SA_ID=$(az storage account show -n azureopscopilotstore --query id -o tsv)
+MSYS_NO_PATHCONV=1 az network private-endpoint create \
+  --vnet-name azureops-vnet --subnet gateway-subnet \
+  --private-connection-resource-id "$SA_ID" --group-id blob \
+  --connection-name azureopscopilotstore-blob-connection
+
+az network private-endpoint dns-zone-group create \
+  --endpoint-name azureopscopilotstore-blob-pe --name default-zone-group \
+  --private-dns-zone privatelink.blob.core.windows.net --zone-name blob
+
+# Verified from inside the VNet
+az vm run-command invoke -n app-vm1 --scripts "getent hosts azureopscopilotstore.blob.core.windows.net"
+# -> 10.10.2.4
+
+az storage account update -n azureopscopilotstore --public-network-access Disabled
+
+# Internal test (via private endpoint)
+az vm run-command invoke -n app-vm1 --scripts "curl -s -o /dev/null -w 'HTTP %{http_code}\n' https://azureopscopilotstore.blob.core.windows.net/..."
+# -> HTTP 409
+
+# External test (laptop, PowerShell -- curl is aliased to Invoke-WebRequest there, needed curl.exe explicitly)
+curl.exe -v -o NUL -w "HTTP %{http_code}`n" https://azureopscopilotstore.blob.core.windows.net/...
+# -> HTTP 403
+```
+
+**What broke / what I learned:**
+- Git Bash's path-mangling bug isn't limited to literal `/...` arguments — it also mangles the *result* of a command substitution (`$(...)`) once that value is used as an argument starting with `/`. The mangling happens at argument-parsing time for the outer command, regardless of where the string originated.
+- In PowerShell (as opposed to Git Bash), `curl` is aliased to `Invoke-WebRequest` and doesn't accept real curl's flags — `curl.exe` invokes the actual curl binary and behaves as expected. Worth remembering since this project's terminal usage switches between Git Bash and PowerShell.
+- My own prediction (external access to a "publicly disabled" storage account would time out) was wrong — it's important to state a prediction, test it, and correct it openly rather than write up only the version that matches what was expected going in.
+
+**Cost check:** One private endpoint (~$0.01/hr) added, negligible. No other new spend this chapter.
+
+---
+
+## Module 6 — Azure Networking, Chapter 7 (Application Gateway/WAF — built as software WAF instead) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 7 — Application Gateway and WAF concepts. Redirected mid-session by explicit user request to a self-hosted software WAF (nginx + ModSecurity + OWASP CRS on existing VMs) instead of Azure Application Gateway, for cost reasons.
+
+**What I did:**
+- User raised a real architectural/cost concern: Chapter 5's Load Balancer is a managed Azure PaaS resource with real ongoing cost (~$0.025/hr + data processing), separate from the VM compute already being paid for, and asked whether a self-hosted software load balancer/WAF on existing VMs would be more cost-appropriate for a learning-budget project, referencing standard "software vs cloud load balancer" industry concepts.
+- Presented both options with a real cost comparison and asked for direction via two explicit decisions: (1) keep the existing Azure LB running for a few more days for side-by-side comparison rather than deleting it immediately, (2) build Chapter 7 as a self-hosted nginx+ModSecurity WAF instead of Azure Application Gateway+WAF (which would have cost ~$0.25-0.45/hr, meaningfully more than the LB).
+- Confirmed the project's existing plan already aligns with this cost philosophy for two other components: Qdrant's planned 3-node cluster (Module 9) is self-hosted by necessity (no native Azure managed offering), and Redis already runs self-hosted via docker-compose rather than Azure Cache for Redis.
+- Deployed `owasp/modsecurity-crs:nginx` (Docker) on `app-vm1`, proxying to the existing Python app on `localhost:8000`. Hit a real bug: the container runs as an unprivileged user by design and cannot bind port 80; had to use its supported default (`PORT=8080`) instead, and update all downstream references (LB rule, NSG) to match rather than fighting the constraint.
+- Verified real WAF behavior directly on `app-vm1`: a normal request returned the app's actual response; a SQL-injection-style payload (`?id=1' OR '1'='1`) was blocked with HTTP 403 by ModSecurity before reaching the app at all.
+- Repeated the identical setup on `app-vm2`, confirmed identical results on both normal and malicious requests.
+- Re-pointed `azureops-lb`'s health probe and load-balancing rule from backend port 8000 to 8080, so ALL traffic passes through the WAF layer rather than leaving a bypass path directly to the raw app — added the matching NSG rules (`AzureLoadBalancer` source for the probe, `Internet` source for real client traffic to 8080), reusing the exact two-rule pattern discovered and understood in Chapter 5.
+- Verified the complete real path end-to-end through the public Load Balancer IP: normal request returned the app's response, the same SQLi payload was blocked with HTTP 403 — confirming the WAF protects the actual production traffic path, not just localhost on each VM in isolation.
+- Flagged (not yet cleaned up) that the old `Allow-Internet-8000`/`Allow-LB-Probe-8000` NSG rules are now vestigial since nothing routes to port 8000 through the LB anymore — not a live risk since these VMs have no public IP, but worth removing for hygiene.
+
+**Commands used:**
+```bash
+# On each backend VM
+sudo apt install -y docker.io && sudo systemctl enable --now docker
+sudo docker run -d --name waf-proxy --network host --restart unless-stopped \
+  -e BACKEND=http://localhost:8000 -e PARANOIA=1 -e PORT=8080 \
+  owasp/modsecurity-crs:nginx
+
+# Verified directly on the VM
+curl -s http://localhost:8080                                          # -> app's normal response
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
+  "http://localhost:8080/?id=1%27%20OR%20%271%27=%271"                 # -> HTTP 403
+
+# Re-pointed the LB to the WAF layer
+az network lb probe update --lb-name azureops-lb -n health-probe --port 8080 --path /health
+az network lb rule update --lb-name azureops-lb -n http-rule --backend-port 8080
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-LB-Probe-8080 --priority 121 \
+  --source-address-prefixes AzureLoadBalancer --destination-port-ranges 8080
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-Internet-8080 --priority 106 \
+  --source-address-prefixes Internet --destination-port-ranges 8080
+
+# Verified through the real public path
+curl -s http://<lb-public-ip>                                          # -> app's response
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
+  "http://<lb-public-ip>/?id=1%27%20OR%20%271%27=%271"                 # -> HTTP 403
+```
+
+**What broke / what I learned:**
+- The `owasp/modsecurity-crs:nginx` image deliberately runs as an unprivileged user and refuses to bind ports below 1024 — this is a real security hardening choice on the image maintainers' part, not a bug to route around; the correct response is to use the supported higher port and adjust everything downstream (LB, NSG) to match, not to try to force privileged-port binding.
+- A cost/architecture concern raised mid-session is worth pausing for, not just noting and continuing — this redirected an entire chapter's approach and produced a more cost-appropriate result than the original plan would have.
+- Reusing existing VMs for an additional workload (WAF proxy alongside the app itself) is a legitimate, common pattern for cost-constrained environments, with the honest tradeoff being config duplication across nodes and no dedicated WAF tier to scale independently of the app tier.
+
+**Cost check:** Zero new Azure resources this chapter — Docker containers on already-running, already-paid-for VMs. The user explicitly chose to keep the Chapter 5 Load Balancer running (rather than deleting it) for direct comparison against this software approach, so that small ongoing cost (~$0.025/hr) continues by deliberate choice, not oversight.
+
+---
+
+## Also this session: cost-management follow-up + deferred LB decision tracked
+
+**What happened:** User asked how much `azureops-lb` actually costs. Gave a published-pricing estimate (~$0.03/hr combined LB + public IP, ~$21-22/mo if run continuously), then queried real Cost Management data to get an actual number — found billing data has an 8-24hr reporting lag, so today's new resources (LB, app VMs) hadn't posted costs yet; only `azureops-vm01`'s older disk/IP showed real figures. Explained this lag honestly rather than reporting a misleading "$0 so far."
+- User then asked whether the app-tier Load Balancer could be switched to software later, specifically timed with the Module 9 Qdrant 3-node cluster work. Clarified these are related but distinct problems (app-tier HTTP load balancing vs. Qdrant's own Raft-based internal clustering) and proposed deferring the final managed-vs-software call for the app tier until Module 9, to design one consistent software-LB approach for both at once rather than twice separately. Tracked this explicitly in PLAN.md as a deferred decision, same pattern as the devopspk.online/Front Door deferred goal.
+
+---
+
+## Module 6 — Azure Networking, Chapter 8 (Azure DNS) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 8 — Azure DNS, public zones and records, built and verified for real without touching the actual `devopspk.online` domain.
+
+**What I did:**
+- Created a real public Azure DNS zone (`azureops-lab.test`) — deliberately using `.test`, an IANA-reserved TLD meant specifically for testing/documentation, guaranteed never to be a real registrable domain, so there's zero chance of confusion with real infrastructure or accidental interference with `devopspk.online`.
+- Added an A record (`app` -> `azureops-lb`'s real public IP), a CNAME record (`www` -> `app.azureops-lab.test`), and a TXT record (`@`, a verification-style string) — real record management, not just zone creation.
+- Verified the zone actually works by querying one of Azure's assigned nameservers *directly* (`nslookup app.azureops-lab.test ns1-08.azure-dns.com`) rather than through normal DNS resolution — this correctly resolved to the real LB IP, proving the zone functions completely independent of registrar delegation, which was the whole point: creating a zone and adding records has zero effect on any live domain until NS records are actually changed at the registrar.
+- Confirmed all 5 record sets exist with correct types (`NS`/`SOA` auto-created by Azure, plus the `TXT`/`A`/`CNAME` added manually) via `az network dns record-set list`.
+
+**Commands used:**
+```bash
+az network dns zone create --name azureops-lab.test --resource-group azureops-copilot-rg
+az network dns record-set a add-record --zone-name azureops-lab.test --record-set-name app --ipv4-address 135.235.240.52
+az network dns record-set cname set-record --zone-name azureops-lab.test --record-set-name www --cname app.azureops-lab.test
+az network dns record-set txt add-record --zone-name azureops-lab.test --record-set-name @ --value "azureops-copilot-verification"
+
+nslookup app.azureops-lab.test ns1-08.azure-dns.com   # -> 135.235.240.52, direct nameserver query
+
+az network dns record-set list -g azureops-copilot-rg -z azureops-lab.test --query "[].{name:name, kind:type}" -o json
+```
+
+**What broke / what I learned:**
+- Nothing broke this chapter — a clean build, likely because the zone/record creation flow doesn't touch VMs, NSGs, or any of the areas that produced bugs in earlier chapters (no Git-Bash path arguments, no container privilege issues, no cross-resource NSG interactions).
+- Azure Cost Management's real billing data lags actual resource usage by roughly 8-24 hours — worth remembering before ever reporting a cost number as "confirmed" without checking whether the underlying resource is old enough for its usage to have posted yet.
+
+**Cost check:** One new public DNS zone (~$0.50/month base + per-query charges, negligible at this volume) — small, ongoing, deliberately accepted rather than overlooked.
+
+---
+
+## Module 6 — Azure Networking, Chapter 9 (Front Door — concept-only, no resource built) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 9 — Azure Front Door concepts. Deliberately built as concept-and-comparison only, no real resource created.
+
+**What I did:**
+- Before building anything, laid out Front Door's real cost (Standard ~$35/mo base + usage, Premium ~$330/mo base + usage) against what's actually been built so far in this module (LB ~$0.03/hr, software WAF $0 extra, DNS zone ~$0.50/mo) — by far the most expensive item discussed in the project.
+- Pointed out honestly that this project doesn't currently have the architecture Front Door's value proposition assumes: everything runs in one region (`centralindia`), so there's no second origin to fail over between and no geographically-distributed user base for edge proximity to matter for.
+- Presented four real alternatives with real cost figures: skip it entirely (correct default for single-region projects), Cloudflare free tier ($0, what many real cost-conscious teams actually use instead of a cloud provider's native edge product), Azure Traffic Manager (DNS-only failover, per-query pricing, no fixed base — a cheaper stepping stone once genuinely multi-region), and Front Door itself (once multi-region with real traffic to justify it).
+- Asked for direction and got two decisions: (1) Cloudflare free tier as the real hands-on build for this chapter, then (2) on discovering Cloudflare requires a real domain (unlike Azure DNS's `.test` trick from Chapter 8) and the only available domain is `devopspk.online` — which was explicitly reserved for Module 13 — chose to keep it untouched and do concept-only instead, preserving that earlier decision rather than quietly overriding it for convenience.
+- Wrote the full comparison (with real cost figures) into the actual chapter content in the frontend curriculum browser, not just left in chat — the same standard applied to every cost-conscious decision this module (Chapter 5's LB comparison, Chapter 7's WAF comparison).
+
+**Commands used:** None — this chapter deliberately built no new resources.
+
+**What broke / what I learned:**
+- Nothing broke technically — the "failure" avoided here was almost building infrastructure that didn't map to a real need (Front Door for a single-region app) or accidentally touching a domain reserved for a later, deliberate step (Cloudflare requiring `devopspk.online`).
+- Cloudflare's free tier, despite being the "cost-conscious" choice by cost alone, still has a real-world consequence (DNS delegation of an actual domain) that a throwaway resource (like Chapter 8's `.test` zone) doesn't — cost isn't the only axis that matters when deciding whether to build something for real versus conceptually.
+
+**Cost check:** Zero new spend this chapter — the most cost-conscious possible outcome, achieved by recognizing the infrastructure wasn't needed yet rather than by finding a cheaper way to build it anyway.
+
+---
+
+## Module 6 — Azure Networking, Chapter 10 (network architecture lab) — 2026-09-21, MODULE 6 COMPLETE
+
+**Plan item(s):** Module 6, Chapter 10 — design and troubleshoot the complete AzureOps network. Final chapter of Module 6.
+
+**What I did:**
+- Documented the complete real network topology as actually built across Chapters 1-9: `azureops-vnet` (10.10.0.0/16), `app-subnet` (10.10.1.0/24, NSG-protected, holding `app-vm1`/`app-vm2`) and `gateway-subnet` (10.10.2.0/24, intentionally NSG-less, holding the Private Link endpoint), and the full real request path (internet -> LB -> NSG -> WAF container -> app).
+- Ran a real, live troubleshooting lab rather than a hypothetical one: deliberately changed `Allow-Internet-8080` from Allow to Deny, confirmed the break via the actual browser (`ERR_TIMED_OUT` on the LB's public IP) and `curl`.
+- Guided diagnosis using the narrowest-first methodology from Module 3: checked app health directly on the VM first (bypassing the network entirely) — got `HTTP 200`, ruling out the application/WAF layer — then checked NSG rules and found `Allow-Internet-8080` set to Deny.
+- Important finding surfaced during diagnosis: the Load Balancer's own health probe (`Allow-LB-Probe-8080`, source `AzureLoadBalancer`) was untouched and still passing, so the LB never reported the backend as unhealthy despite real traffic being completely blocked — the probe path and the real-traffic path are genuinely independent through the NSG, and a healthy probe status proves nothing about real reachability. Same lesson as Chapter 5, now demonstrated as a live incident rather than discovered while building.
+- Fixed the rule, confirmed full recovery through the real public path: `HTTP 200`, `Hello from app-vm2`, response headers showing it passed through nginx (the WAF layer) correctly.
+- Wrote up the complete architecture and the lab as Chapter 10's content — the last chapter of Module 6.
+
+**Commands used:**
+```bash
+# Break
+az network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Deny
+
+# Diagnose -- narrowest/most isolated test first
+az vm run-command invoke -n app-vm1 --scripts "curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://localhost:8080"
+# -> HTTP 200 (app fine)
+az network nsg rule list --nsg-name app-subnet-nsg --query "sort_by([], &priority)" -o table
+# -> Allow-Internet-8080: Deny (found it)
+
+# Fix
+az network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Allow
+
+# Confirm recovery
+curl -v http://135.235.240.52 --max-time 10
+# -> HTTP 200, "Hello from app-vm2", Server: nginx
+```
+
+**What broke / what I learned:**
+- Confirmed directly (not just theorized) that a Load Balancer's health probe status and real client-traffic reachability are independently gated by NSG rules — the probe rule and the internet-traffic rule are two separate allow/deny decisions, and breaking only one produces a "backend reports healthy, users can't reach it" state that would be genuinely confusing without knowing to check both.
+- The most efficient diagnostic sequence for "is it the app or the network" is to test the app in complete isolation first (localhost on the VM itself) before touching anything network-related — this single step ruled out an entire category of possible causes immediately.
+
+**Cost check:** No new spend — pure diagnostic/NSG work, fully reversible, zero resources created or destroyed.
+
+---
+
+# MODULE 6 — AZURE NETWORKING: COMPLETE (2026-09-21)
+
+All 10 chapters done, all built and verified for real:
+- Real VNet/NSG/routing built from scratch (Ch 1-4)
+- Real Load Balancer with verified failover (Ch 5) — three genuine bugs found and fixed live
+- Real Private Link with public access disabled and verified from both sides (Ch 6)
+- Real software WAF chosen over Azure Application Gateway for cost reasons, verified blocking a live SQLi payload end-to-end (Ch 7)
+- Real public DNS zone, verified via direct nameserver query, without touching the reserved production domain (Ch 8)
+- Front Door deliberately NOT built — evaluated honestly against real alternatives and real cost figures, chose not to build infrastructure the project doesn't need yet (Ch 9)
+- A complete, real, live troubleshooting incident — broken, diagnosed, and fixed (Ch 10)
+
+Two deferred decisions tracked for later modules: `devopspk.online` + Front Door (Module 13), and the managed-vs-software Load Balancer final call (Module 9, alongside the Qdrant cluster).
+
+Six modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking.

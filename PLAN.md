@@ -110,7 +110,16 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** understand how Azure traffic flows from the internet to the application.
 
-**Status (2026-09-21):** In progress — Chapters 1-4 done (VNet/subnet, NSG, public/private connectivity, route tables), all built from scratch by hand (user running each `az` command directly rather than Claude executing them) into a real `azureops-vnet` (10.10.0.0/16, app-subnet 10.10.1.0/24 + gateway-subnet 10.10.2.0/24), separate from Phase 1's auto-created VM networking. Deliberately paced across multiple days at the user's request — resources are being kept running to study in depth, not torn down same-day. Chapters 5-10 (Load Balancer, Private Link, Application Gateway+WAF, Azure DNS, Front Door, network lab) remaining — Application Gateway+WAF and Front Door carry real hourly cost (~$0.25-0.45/hr) and will run for multiple days per the user's preference, a deliberate deviation from this plan's general "build, test, delete same day" cost discipline rule for those specific services. Full chapter content for 1-4 written in the frontend curriculum browser. See LEARNING_LOG.md "Module 6 — Azure Networking" for details.
+**Status (2026-09-21):** Done — all 10 chapters, real infrastructure throughout, no resource built without a reason:
+- **Ch 1-4**: `azureops-vnet` (10.10.0.0/16, app-subnet + gateway-subnet), NSG, connectivity, and routing built from scratch.
+- **Ch 5**: `azureops-lb` (Standard LB) load-balancing `app-vm1`/`app-vm2`, real failover verified. Managed-vs-software LB comparison written into the chapter; final call deferred to Module 9 (alongside the Qdrant cluster decision).
+- **Ch 6**: Private Link on the Module 5 storage account, public access disabled, verified from both inside and outside the VNet.
+- **Ch 7**: cost-conscious redirect — software WAF (`owasp/modsecurity-crs` on the existing VMs) instead of Azure Application Gateway, zero extra cost, verified blocking a real SQLi payload end-to-end through the LB.
+- **Ch 8**: real public DNS zone (`azureops-lab.test`, an IANA test TLD) with A/CNAME/TXT records, verified via direct nameserver query — `devopspk.online` deliberately untouched.
+- **Ch 9**: Front Door evaluated against Cloudflare/Traffic Manager/skip-it with real cost figures; built nothing, since this project is single-region and Cloudflare would have required touching the reserved domain.
+- **Ch 10**: full network architecture documented, plus a real live troubleshooting lab (deliberately broke `Allow-Internet-8080`, diagnosed via app-health-first methodology, found and fixed it, confirmed recovery).
+
+Five genuine bugs hit and fixed across the module (mangled probe path, redundant NIC-level NSGs, a path-mangling recurrence, a container privileged-port issue, plus the Chapter 10 lab's deliberate one). All commands run by the user directly per their request. Full chapter content for all 10 chapters in the frontend curriculum browser. See LEARNING_LOG.md, search "Module 6" for the full chapter-by-chapter detail.
 
 ### Module 7 — CI/CD with GitHub Actions
 
@@ -303,6 +312,21 @@ finished, per the foundations-first philosophy above — tracked here so it
 isn't lost. When picked up, it belongs after Module 6 (Azure Networking,
 custom VNet/NSG/LB) and pairs with Module 13's chapters (Front Door
 architecture, custom domains/TLS, WAF at the edge).
+
+## Deferred decision — app-tier Load Balancer: managed vs. software
+
+2026-09-21: `azureops-lb` (Azure Standard Load Balancer, Module 6 Chapter 5)
+is being kept running for now for direct comparison against the
+cost-conscious choices made elsewhere in this module (Chapter 7's software
+WAF). Explicit decision: **defer the final managed-vs-software call for the
+app tier until Module 9**, when the Qdrant 3-node cluster is built — at
+that point, design one consistent software-LB approach (e.g. HAProxy) that
+can inform (or directly cover) both the app tier (`app-vm1`/`app-vm2`,
+currently behind `azureops-lb`) and whatever fronts the Qdrant cluster,
+rather than making two separate one-off decisions. Note these are related
+but distinct problems: the app tier is plain HTTP load balancing; Qdrant
+has its own internal Raft-based clustering, so its "load balancing" need
+is more likely a thin connection proxy than a full LB replacement.
 
 ## Out of scope initially
 

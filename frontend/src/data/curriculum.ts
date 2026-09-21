@@ -1087,13 +1087,15 @@ export const modules: Module[] = [
         ],
         troubleshooting: [
           'Traffic unexpectedly blocked despite a rule that should allow it → check for a lower-priority-number rule that matches first and denies; the first match wins, rule order (not just existence) matters.',
+          "`az network nic list-effective-nsg` shows a rule you never wrote, from an NSG you didn't create → `az vm create` auto-creates its own NIC-level NSG by default unless told not to, even when the target subnet already has one — both apply simultaneously, and traffic needs to pass both. This happened for real in the Load Balancer chapter: `app-vm1`/`app-vm2` each got an auto-created `app-vmXNSG` (SSH-only) in addition to the intended `app-subnet-nsg`, silently blocking all LB traffic until found via `list-effective-nsg` and removed.",
         ],
         interview: [
           'If a subnet-level NSG allows a port but a NIC-level NSG on the same VM denies it, what happens?',
           'What are the three default rules every NSG has, and why can\'t they be deleted?',
+          'How would you discover that a NIC has an NSG you didn\'t know about?',
         ],
         azureConnection:
-          '`app-subnet-nsg` now enforces exactly Phase 1\'s NSG pattern but built deliberately from the start rather than starting wide-open and getting fixed reactively: 80/443 open to the internet, SSH restricted to VNet-only — `gateway-subnet` intentionally has no NSG yet, meaning nothing there is reachable at all until a later chapter changes that.',
+          '`app-subnet-nsg` now enforces exactly Phase 1\'s NSG pattern but built deliberately from the start rather than starting wide-open and getting fixed reactively: 80/443 open to the internet, SSH restricted to VNet-only — `gateway-subnet` intentionally has no NSG yet, meaning nothing there is reachable at all until a later chapter changes that. The Load Balancer chapter\'s real debugging session is the live version of this chapter\'s own interview question about conflicting NIC/subnet NSGs.',
       },
       {
         id: 'public-private-connectivity',
@@ -1134,6 +1136,168 @@ export const modules: Module[] = [
         ],
         azureConnection:
           "`azureops-rt` exists with a `force-through-appliance` route (0.0.0.0/0 -> 10.10.2.10) but was deliberately left unattached to any subnet — attaching it would break outbound connectivity immediately since no real appliance listens at that IP, a live illustration of a UDR's blast radius kept safely theoretical for now.",
+      },
+      {
+        id: 'azure-load-balancer',
+        title: 'Azure Load Balancer',
+        concept:
+          "A Standard Load Balancer distributes traffic across a backend pool (VMs' NICs) based on a 5-tuple hash (source/dest IP, source/dest port, protocol) by default, so the same client connection usually lands on the same backend, but different connections spread across the pool. A health probe polls each backend on a defined port/path/interval; only backends currently passing the probe receive new traffic. Critically, a Standard LB does NOT perform source NAT on inbound traffic — the original client's public IP reaches the backend VM unchanged, which has real NSG implications (see below). Creating an LB, probe, and rule are three separate steps; nothing routes until all three exist and the backend pool actually has members in it.\n\nManaged vs. software load balancer — a real build-vs-buy decision, not trivia. A managed Load Balancer (what this chapter builds) is Azure's PaaS offering: roughly $0.025/hr plus data processed (~$18-20/month if left running continuously), in exchange for Azure handling high availability, zone-redundancy, and patching automatically. A software load balancer — nginx, HAProxy, or Envoy running as a plain process on a VM you already own — costs nothing extra on top of that VM, but the tradeoff flips completely: a single software LB instance is itself a single point of failure unless you deliberately cluster it (e.g. with keepalived/VRRP for a floating IP), and you own its patching and scaling from then on. The managed option teaches you how to configure a managed service correctly; the software option teaches you how load balancing actually works underneath that abstraction. Both are genuinely standard practice — managed is more common for production Azure workloads by default, software is common in cost-sensitive teams or when custom L7 logic is needed that a managed L4 LB can't express.",
+        whyDevops:
+          "This chapter is where Module 6 stopped being theoretical — building a working Load Balancer from scratch surfaced two real, non-obvious bugs in one session, both invisible until actually tested end-to-end rather than just configured and assumed correct. It's also where a real cost conversation happened mid-project: is a managed LB worth its ongoing cost for a learning-budget setup, or should it be a software one instead?",
+        handsOn: [
+          { label: 'The full build, in order', code: 'az network public-ip create --sku Standard --zone 1 2 3 --name azureops-lb-pip ...\naz network lb create --sku Standard --name azureops-lb --frontend-ip-name lb-frontend --backend-pool-name app-backend-pool ...\naz network lb probe create --protocol Http --port 8000 --path /health --interval 5 --threshold 2 ...\naz network lb rule create --frontend-port 80 --backend-port 8000 --probe-name health-probe ...\n# then attach each VM NIC\'s ip-config to the backend pool' },
+          { label: 'Verifying it for real (not just "looks configured")', code: 'for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-public-ip>; done\n# alternated between "Hello from app-vm1" and "Hello from app-vm2" -- real distribution, not assumed' },
+        ],
+        troubleshooting: [
+          "Health probe path silently wrong → Git Bash mangled `--path /health` into a Windows-style path (`C:/Program Files/Git/health`) on creation, visible only by checking `az network lb probe show`'s actual `requestPath` field — both backends were \"unhealthy\" against a path that could never exist, and the LB just dropped all traffic with no error, only a connection timeout. Fixed with `MSYS_NO_PATHCONV=1` prefixed on the `probe update` call.",
+          'LB configured correctly, probe passing, backend pool populated — still connection-timeout → check for an NSG blocking the *forwarded client traffic specifically*, not just the health probe: a rule allowing `AzureLoadBalancer` as source only covers probe traffic; real client requests arrive with the original internet source IP preserved (Standard LB doesn\'t SNAT inbound), so `Internet` also needs an explicit allow to the backend port.',
+          "An NSG rule you're certain you wrote doesn't appear to apply at all → check `az network nic list-effective-nsg`'s full `value[]` array (not just `value[0]`) for a second, auto-created NIC-level NSG stacking on top of the intended subnet-level one — this is exactly what silently blocked everything in this session until removed.",
+        ],
+        interview: [
+          'Why does a health probe passing not guarantee client traffic will actually reach a backend?',
+          'What\'s the practical security implication of a Standard Load Balancer preserving the original client IP instead of doing SNAT?',
+          'Walk through how you\'d debug an LB that accepts connections but every request times out.',
+        ],
+        azureConnection:
+          "`azureops-lb` now genuinely load-balances `app-vm1`/`app-vm2` on port 8080 behind a public frontend on port 80 (moved from 8000 in Chapter 7 once the WAF layer went in front), and it took real debugging to get there: a mangled health-probe path (Git Bash path-mangling, the same bug class as Module 4/5), a missing NSG rule for actual client traffic vs. probe traffic, and a redundant auto-created NIC-level NSG stacking on the intended subnet-level one. Failover was verified for real too — stopping `pyapp` on `app-vm1` made all 8 test requests land on `app-vm2` within ~20s, and restarting it brought both back into rotation automatically, no manual re-registration needed.\n\nAfter this chapter, a real cost conversation happened: should this managed LB be replaced with a software one? The decision made was to keep `azureops-lb` running for a few extra days specifically to compare it side-by-side against the cost-conscious choices made in Chapter 7 — worth being precise about what that comparison actually is: Chapter 7's `owasp/modsecurity-crs` containers are a software WAF/reverse-proxy running independently on each VM, not a software load balancer replacing `azureops-lb` — Azure's Load Balancer is still the only thing actually distributing traffic between `app-vm1` and `app-vm2` today. A true managed-vs-software Load Balancer comparison (e.g. HAProxy doing the cross-VM distribution itself) would be a genuine follow-up exercise, not something this session built.",
+      },
+      {
+        id: 'private-link',
+        title: 'Private Link',
+        concept:
+          "A private endpoint gives an Azure PaaS service (Storage, Key Vault, SQL, etc.) a network interface with a private IP address inside your VNet, so it can be reached without traversing the public internet at all. This requires a private DNS zone with an *exact*, Azure-reserved name per service type (e.g. `privatelink.blob.core.windows.net` for Storage blob) — using an arbitrary custom zone name won't get automatically wired up by Azure's tooling. A DNS zone group then links the private endpoint to that zone, auto-creating the A record that makes the service's normal hostname resolve to the private IP for anything inside the linked VNet, while it still resolves publicly for anything outside.",
+        whyDevops:
+          "This is how a backend (like this project's FastAPI app talking to Qdrant/Redis, or a future migration to Azure Cache for Redis) reaches a managed Azure service without that traffic ever touching the public internet — reduced attack surface and often lower latency, at the cost of needing correct DNS zone naming to actually work.",
+        handsOn: [
+          { label: 'Built and verified this session, using the real storage account from Module 5', code: 'az network private-dns zone create --name privatelink.blob.core.windows.net\naz network private-dns link vnet create --zone-name privatelink.blob.core.windows.net --virtual-network azureops-vnet --registration-enabled false\naz network private-endpoint create --vnet-name azureops-vnet --subnet gateway-subnet \\\n  --private-connection-resource-id $SA_ID --group-id blob --connection-name azureopscopilotstore-blob-connection\naz network private-endpoint dns-zone-group create --endpoint-name azureopscopilotstore-blob-pe --private-dns-zone privatelink.blob.core.windows.net --zone-name blob' },
+        ],
+        troubleshooting: [
+          "A private endpoint's resource ID argument gets mangled → same Git Bash path-conversion bug as everywhere else in this project (`/subscriptions/...` → a Windows path) — this time inside a `$(...)` command substitution result, not a literal argument, which is easy to miss; `MSYS_NO_PATHCONV=1` on the consuming command fixes it regardless of where the value came from.",
+          "Using a custom/arbitrary private DNS zone name instead of the exact reserved one (`privatelink.<service>.<suffix>`) → Azure's automatic DNS integration won't connect it correctly; the zone name is not just a label, it's part of the contract.",
+          '"Disabled" public network access still returns a real HTTP response instead of a connection timeout when hit externally → this is expected, not a misconfiguration: Azure Storage rejects at its own service layer (a 403 in this project\'s real test) rather than removing its public DNS presence or blackholing the connection — "disabled" means "rejected by the service," not "network-invisible."',
+        ],
+        interview: [
+          'Why does the private DNS zone need an exact, reserved name instead of any name you choose?',
+          'If a storage account has public network access disabled, why might an external request still get an HTTP response instead of a connection timeout?',
+          'What\'s the difference between what a private endpoint provides and what disabling public network access provides — why use both together?',
+        ],
+        azureConnection:
+          'Built directly on Module 5\'s real storage account (`azureopscopilotstore`): a private endpoint (`azureopscopilotstore-blob-pe`, IP `10.10.2.4` in `gateway-subnet`) now makes `azureopscopilotstore.blob.core.windows.net` resolve privately from inside `azureops-vnet` — confirmed via `az vm run-command` from `app-vm1`. Public network access was then disabled on the account entirely; a request from inside the VNet still reached the service (HTTP 409, real rejection reason, not a network failure) while a request from the laptop over the public internet got HTTP 403 — both prove the request reached Azure\'s service layer, contradicting the naive assumption that "disabled" means invisible from outside.',
+      },
+      {
+        id: 'application-gateway-waf',
+        title: 'Application Gateway and WAF concepts',
+        concept:
+          "Application Gateway is Azure's managed Layer 7 reverse proxy: unlike the Load Balancer (Chapter 5, L4 — IP/port only), it terminates HTTP(S) and can route by URL path/hostname, and its WAF SKU inspects request content against the OWASP Core Rule Set (SQLi, XSS, path traversal, etc.) before traffic reaches a backend. The same capability exists as self-hosted software: nginx (or Apache) plus the ModSecurity engine, running the identical OWASP Core Rule Set. The functional difference is who runs and pays for the reverse proxy layer, not what it protects against — a managed WAF costs real money continuously (~$0.25-0.45/hr) in exchange for zero maintenance burden and Azure-native integration (autoscaling, diagnostics, Front Door integration); a software WAF costs nothing extra beyond compute you already own, in exchange for you owning its patching, scaling, and HA design.",
+        whyDevops:
+          "This is a real, recurring build-vs-buy decision in DevOps work, not just an Azure trivia point — knowing both the managed and self-hosted paths, and being able to reason about the cost/ownership tradeoff for a given team's constraints, is more valuable than only knowing how to click through one option.",
+        handsOn: [
+          {
+            label: 'Built this session: software WAF (nginx + ModSecurity + OWASP CRS) on existing VMs instead of Application Gateway',
+            code: "sudo docker run -d --name waf-proxy --network host --restart unless-stopped \\\n  -e BACKEND=http://localhost:8000 -e PARANOIA=1 -e PORT=8080 \\\n  owasp/modsecurity-crs:nginx\n# repeated on app-vm1 AND app-vm2 -- zero extra Azure cost, reuses existing VM compute\n# then re-pointed azureops-lb's probe + rule from port 8000 -> 8080 so ALL\n# traffic passes through the WAF layer, not just some of it",
+          },
+        ],
+        troubleshooting: [
+          "The WAF container crash-loops immediately after `docker run` → the `owasp/modsecurity-crs` nginx image deliberately runs as an unprivileged user and cannot bind ports below 1024; use the default `PORT=8080` (or another port >1024) rather than `PORT=80`, and point your load balancer's backend port there instead — hit exactly this in this session.",
+          "A backend port gets changed (e.g., 8000 -> 8080 to route through a new WAF layer) but the OLD port's NSG rules are left in place → not a live vulnerability by itself if the VM has no public IP, but it's a dangling rule that misrepresents the actual traffic path and should be cleaned up — exactly the state this project is in right now (`Allow-Internet-8000`/`Allow-LB-Probe-8000` are vestigial after moving to 8080).",
+          "Only SOME paths to a backend go through the WAF (e.g., a leftover LB rule or open NSG port bypassing it) → the WAF only protects what it's actually placed in front of; an attacker will simply target whatever path skips it. This is exactly why the LB's rule/probe were repointed from 8000 to 8080 instead of adding 8080 as a second, parallel path.",
+        ],
+        interview: [
+          'What specific capability does Application Gateway/WAF add on top of what the Load Balancer from Chapter 5 already does?',
+          'Walk through the cost/ownership tradeoff between Azure Application Gateway+WAF and a self-hosted nginx+ModSecurity setup on existing VMs.',
+          'If a WAF is in place but an attacker\'s request still reaches the backend unfiltered, what\'s the most likely explanation?',
+        ],
+        azureConnection:
+          "This project deliberately built the self-hosted path instead of Azure Application Gateway, as a direct cost-conscious decision made mid-session: `app-vm1`/`app-vm2` each run an `owasp/modsecurity-crs:nginx` container proxying to the local app, with `azureops-lb`'s health probe and load-balancing rule re-pointed to port 8080 so every request now passes through WAF inspection. Verified end-to-end through the full real path (internet -> Load Balancer -> WAF -> app): a normal request returned `Hello from app-vm1`, and a SQL-injection-style payload (`?id=1' OR '1'='1`) was blocked with HTTP 403 before ever reaching the Python app — the same protection Application Gateway's WAF SKU would provide, at zero additional Azure cost.",
+      },
+      {
+        id: 'azure-dns',
+        title: 'Azure DNS',
+        concept:
+          "Azure DNS hosts DNS zones — public (resolvable by anyone on the internet, once delegated) or private (Chapters 3/6, resolvable only inside linked VNets). A public zone by itself does nothing until the domain's registrar NS records point at Azure's assigned nameservers ('delegation') — creating the zone and adding records is completely safe and has zero effect on a live domain until that delegation step happens, since nothing on the internet will query Azure for that domain's records until the registrar says to. Once delegated, Azure's 4 assigned nameservers (spread across different top-level domains — .com/.net/.org/.info — for resilience against any single TLD having an outage) answer queries for every record in the zone.",
+        whyDevops:
+          "Understanding that zone creation and delegation are two separate, independently-safe steps is what makes it possible to build and test real DNS infrastructure without any risk to a live production domain — exactly the approach used here to avoid touching `devopspk.online` before Module 13's Front Door work is actually ready for it.",
+        handsOn: [
+          { label: 'A real public zone, with real records, on a throwaway test domain (not devopspk.online)', code: 'az network dns zone create --name azureops-lab.test --resource-group azureops-copilot-rg\naz network dns record-set a add-record --zone-name azureops-lab.test --record-set-name app --ipv4-address <lb-ip>\naz network dns record-set cname set-record --zone-name azureops-lab.test --record-set-name www --cname app.azureops-lab.test\naz network dns record-set txt add-record --zone-name azureops-lab.test --record-set-name @ --value "verification-string"' },
+          { label: 'Proving it resolves, WITHOUT registrar delegation', code: 'nslookup app.azureops-lab.test ns1-08.azure-dns.com\n# queries Azure\'s nameserver directly, bypassing normal DNS resolution entirely -- proves the zone works before any registrar change' },
+        ],
+        troubleshooting: [
+          'A newly created zone/record "doesn\'t resolve" when queried normally (e.g. via `nslookup <name>` with no nameserver specified) → this is expected before delegation; querying Azure\'s assigned nameservers directly (`nslookup <name> <azure-nameserver>`) proves the zone itself works, independent of whether the registrar has been updated yet.',
+          'Using `.test` as this chapter\'s zone name is deliberate, not arbitrary → it\'s an IANA-reserved TLD specifically meant for testing and documentation, guaranteed to never be a real, registrable domain — eliminates any chance of confusion with real infrastructure.',
+        ],
+        interview: [
+          'Why is creating a public DNS zone and adding records to it completely safe for a live domain, before any registrar change?',
+          'Why does Azure DNS assign nameservers across 4 different top-level domains instead of 4 azure-dns.com servers?',
+          'How would you prove a DNS zone\'s records are correct before touching a production domain\'s delegation?',
+        ],
+        azureConnection:
+          "A real public zone (`azureops-lab.test`) was built with A/CNAME/TXT records and verified by querying Azure's own nameserver directly — `app.azureops-lab.test` resolved to `azureops-lb`'s real public IP. This is deliberately decoupled from `devopspk.online`, which stays untouched until Module 13's Front Door work is ready to actually delegate it — the same zone-creation pattern would apply then, just with the real domain and Front Door's endpoint as the target instead of a throwaway test zone and the Load Balancer's IP.",
+      },
+      {
+        id: 'azure-front-door-concepts',
+        title: 'Azure Front Door concepts',
+        concept:
+          "Front Door is Azure's global edge network: anycast entry points on every continent, terminating TLS and routing L7 traffic to the nearest healthy *origin* (a region, an App Service, a Load Balancer's public IP, a storage static site, etc.), with built-in WAF, caching, and automatic failover between multiple origins in an origin group. Its entire value proposition assumes you have origins in more than one place worth routing between and users spread out geographically enough that edge proximity actually matters. A profile has endpoints (public hostnames), routes (path/domain -> origin group mapping), origin groups (the failover unit — Front Door health-probes each origin and stops sending traffic to unhealthy ones), and optionally a WAF policy attached at the edge, before traffic even reaches Azure's regional network.",
+        whyDevops:
+          "Recognizing when you DON'T need a piece of infrastructure yet is as important a DevOps skill as knowing how to build it. This project is genuinely single-region today (`azureops-vnet` only exists in `centralindia`) — Front Door's core value (multi-region failover, global edge proximity) doesn't apply until that changes, which is exactly why no real Front Door resource was built this chapter.",
+        handsOn: [
+          { label: 'No resource built this chapter — deliberately', code: '# Front Door needs a domain to be meaningful, and the only real domain\n# this project has (devopspk.online) is intentionally reserved for\n# Module 13, once there\'s an actual multi-region origin setup to route\n# between. Building it now would mean either touching that domain early\n# or building throwaway infrastructure that teaches configuration syntax\n# without the real failover scenario Front Door exists for.' },
+        ],
+        troubleshooting: [
+          'Reaching for Front Door "because it\'s the production-grade option" without a second region → if there\'s only one origin, Front Door adds cost and complexity for the same effective routing a regional Load Balancer/Application Gateway already provides; its differentiator is multi-origin failover and global edge presence, neither of which exists with a single origin.',
+        ],
+        interview: [
+          'What does Front Door provide that a regional Application Gateway does not?',
+          'Why would deploying Front Door in front of a single-region application not deliver its main value proposition?',
+          'What has to exist (architecturally) before Front Door is actually worth its cost?',
+        ],
+        azureConnection:
+          'Deliberately not built for this project yet — `devopspk.online` remains untouched, reserved for Module 13 once a genuine multi-region origin setup exists for Front Door to actually add value in front of, rather than being configured prematurely against a single origin.',
+      },
+      {
+        id: 'edge-alternatives-comparison',
+        title: 'Edge/CDN alternatives — cost-conscious comparison',
+        concept:
+          "Front Door isn't the only way to get edge/CDN/WAF capability, and it's rarely the first thing cost-conscious teams reach for. Four real options, in order of increasing cost and capability: (1) skip it entirely — if you're single-region, your regional Load Balancer/Application Gateway already serves every user, and an edge layer solves a problem you don't have; this is the correct default for most small/early-stage projects, not a compromise. (2) Cloudflare's free tier — CDN, basic WAF, DDoS protection, and DNS management, pointed at your existing origin via a CNAME/A record, at zero cost; extremely common in real startups specifically to avoid paying a cloud provider's own edge product before it's justified. (3) Azure Traffic Manager — DNS-level failover across regions only (no L7 proxying, no WAF, no caching), priced per DNS query with no fixed monthly base, genuinely cheaper than Front Door as a stepping stone once you ARE multi-region but don't need Front Door's full feature set. (4) Azure Front Door — full global edge, once you're actually serving geographically distributed users across multiple regional origins and need automatic failover between them.",
+        whyDevops:
+          "This is a real, recurring build-vs-buy-vs-skip decision, and 'skip it, you don't need it yet' is a legitimate, common answer that a lot of infrastructure guidance skips over in favor of always recommending the most feature-complete (and expensive) option.",
+        handsOn: [
+          { label: 'Real cost figures gathered this session (approximate, check the pricing calculator for current numbers)', code: 'Azure Load Balancer (Standard):     ~$0.03/hr combined with its public IP   (~$21-22/mo continuous)\nSoftware WAF (Chapter 7):           $0 extra -- reuses existing VM compute\nAzure Public DNS zone (Chapter 8):  ~$0.50/mo base + per-query, negligible at this volume\nCloudflare free tier:               $0\nAzure Traffic Manager:              ~$0.54/million DNS queries, no fixed base\nAzure Front Door (Standard):        ~$35/mo base + ~$0.09/GB + per-request\nAzure Front Door (Premium):         ~$330/mo base + usage' },
+        ],
+        troubleshooting: [
+          "Assuming the cloud provider's own product is always the 'proper' or 'production-grade' choice → real production systems, including well-known ones, commonly run Cloudflare (or similar third-party edge providers) in front of AWS/Azure/GCP origins specifically for cost reasons; this is standard practice, not a shortcut.",
+        ],
+        interview: [
+          'Walk through the decision tree you\'d use to choose between no edge layer, Cloudflare free tier, Traffic Manager, and Front Door for a given project.',
+          'Why might a cost-conscious team choose a third-party CDN/WAF over their cloud provider\'s native offering?',
+        ],
+        azureConnection:
+          "This project's own decision history is the real example: Chapter 5 evaluated managed vs. software load balancing and chose to keep the managed option for comparison; Chapter 7 evaluated managed vs. software WAF and chose software (zero extra cost, reused existing VMs); this chapter evaluated Front Door vs. its alternatives and chose to build nothing yet, since the project doesn't have the multi-region architecture that would justify it — three different real cost/architecture decisions, three different honest outcomes, all logged rather than defaulting to \"use the managed Azure product\" every time.",
+      },
+      {
+        id: 'network-architecture-lab',
+        title: 'Design and troubleshoot the AzureOps network',
+        concept:
+          "The complete real network built across this module: `azureops-vnet` (10.10.0.0/16) with two subnets — `app-subnet` (10.10.1.0/24, holding `app-vm1`/`app-vm2`, protected by `app-subnet-nsg`) and `gateway-subnet` (10.10.2.0/24, intentionally NSG-less, holding the Private Link endpoint to `azureopscopilotstore`). Traffic path for a real request: internet -> `azureops-lb` (public IP, health-probes port 8080) -> NSG on `app-subnet` (must allow both the probe from `AzureLoadBalancer` AND real traffic from `Internet`, two separate rules) -> the WAF container (`owasp/modsecurity-crs`, ModSecurity inspection) -> the Python app on `localhost:8000`. A separate, unattached route table (`azureops-rt`) and a public DNS zone (`azureops-lab.test`) exist alongside this, deliberately decoupled from the live traffic path and the real `devopspk.online` domain respectively.",
+        whyDevops:
+          "Being able to describe a network's complete traffic path from memory, and diagnose a live failure within it methodically, is the actual skill this whole module built toward — everything before this chapter was building the pieces; this chapter is proving they're understood as a system.",
+        handsOn: [
+          {
+            label: 'A real, live troubleshooting lab run in this session — not hypothetical',
+            code: "# broke it deliberately:\naz network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Deny\n\n# diagnosed step by step, cheapest/most-isolating test first:\n# 1. is the app itself healthy? (bypasses ALL network layers)\naz vm run-command invoke -n app-vm1 --scripts \"curl -s -o /dev/null -w 'HTTP %{http_code}\\n' http://localhost:8080\"\n# -> HTTP 200 -- app is fine, problem is somewhere in the network path\n\n# 2. check the NSG rules for anything unexpected\naz network nsg rule list --nsg-name app-subnet-nsg --query \"sort_by([], &priority)\" -o table\n# -> Allow-Internet-8080 showed Deny -- found it\n\n# fixed it and confirmed recovery:\naz network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Allow",
+          },
+        ],
+        troubleshooting: [
+          'The Load Balancer never reported the backend as unhealthy despite real traffic being completely blocked → because `Allow-LB-Probe-8080` (source `AzureLoadBalancer`) was untouched, only `Allow-Internet-8080` (source `Internet`) was broken — the probe and real client traffic are genuinely independent paths through the NSG, so a healthy probe status tells you nothing about whether real users can actually reach the backend.',
+          'General lab methodology used here, worth internalizing as a default sequence: test the narrowest, most isolated thing first (app health, bypassing network entirely) before widening scope (NSG, then LB, then DNS) — this rules out entire categories of cause in one cheap step instead of guessing broadly.',
+        ],
+        interview: [
+          'Describe this network\'s complete request path from the public internet to the application, including every point traffic could be silently dropped.',
+          'Why did the Load Balancer keep sending traffic to a backend that was actually unreachable to real users?',
+          'What\'s your first diagnostic step when "the app is down," and why that one first?',
+        ],
+        azureConnection:
+          'A real deliberate failure was injected into `app-subnet-nsg` this session (`Allow-Internet-8080` flipped to Deny), confirmed via the browser (`ERR_TIMED_OUT`) and `curl`, diagnosed correctly in two steps (app-health check ruled out the application layer, NSG rule listing found the actual cause), fixed, and recovery confirmed with a real request returning `Hello from app-vm2` through the full WAF-protected path again — the complete lifecycle of a real incident, run end-to-end in a safe, reversible environment.',
       },
     ],
   },

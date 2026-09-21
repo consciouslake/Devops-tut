@@ -181,3 +181,31 @@ git reflog -5
 - gitleaks allowlists well-known placeholder secrets from documentation (like AWS's own `AKIAIOSFODNN7EXAMPLE`) to cut false positives — don't use textbook example keys to test whether a secret scanner works, they may be intentionally ignored.
 
 **Cost check:** No new Azure spend this module — pure Git/GitHub work.
+
+---
+
+## Module 3 — Networking Fundamentals — 2026-09-21
+
+**Plan item(s):** Module 3, Chapters 1-9 — IP/MAC/ports/protocols, OSI/TCP-IP, IPv4/CIDR, DNS, HTTP/HTTPS/TLS, routing/NAT, firewalls, load balancing/reverse proxy, troubleshooting toolkit. Chapter 10 (Azure network lab) deliberately deferred to Module 6.
+
+**What I did:**
+- Ran real diagnostics instead of just reading theory: `nslookup github.com` (DNS resolution, including a resolver timeout/fallback that actually happened live), `curl -v https://github.com` (TCP connect, TLS handshake via schannel, HTTP request/response with headers), `tracert -h 6 github.com` (real hop-by-hop path from home router through ISP backbone in Delhi to Microsoft's network).
+- Used `netstat -ano` on the running docker-compose stack to show a live public-vs-private bind-address example: Redis (6379) and Qdrant (6333) bound to `127.0.0.1` only, frontend (5173) and backend (8000) bound to `0.0.0.0` — the same distinction NSGs enforce at the network layer.
+- Re-read Phase 1's NSG rules (`default-allow-ssh` priority 1000, `open-port-8000` priority 900, implicit deny-all at 65500) through the firewall/stateful-filtering lens instead of just as "commands that fixed a bug."
+- Confirmed `frontend/nginx.conf` is a real reverse proxy (path-based routing to the backend, WebSocket upgrade handling for `/chat`) for the load-balancing/reverse-proxy chapter's hands-on example.
+- Wrote full chapter content for Chapters 1-9 into the frontend curriculum browser, using this session's real command output as examples rather than generic ones.
+- Deliberately did not repeat a from-scratch VNet/subnet/NSG build for Chapter 10 — that's Module 6's dedicated focus, and building it twice would be redundant busywork rather than learning.
+
+**Commands used:**
+```bash
+nslookup github.com
+curl -v https://github.com
+tracert -h 6 github.com
+netstat -ano | grep LISTENING | grep -E ":8000|:6379|:6333|:5173"
+```
+
+**What broke / what I learned:**
+- `dig`, `ss`, and `traceroute` (Linux-native tools) aren't available in this Windows/git-bash environment — `nslookup`, `netstat`, and `tracert` are the Windows equivalents and cover the same diagnostic ground.
+- `nslookup` timed out against the first resolver(s) before succeeding — a real, live example of DNS resolver fallback behavior rather than a hypothetical one.
+
+**Cost check:** No new Azure spend — all diagnostics run against public internet targets (github.com) and the local docker-compose stack.

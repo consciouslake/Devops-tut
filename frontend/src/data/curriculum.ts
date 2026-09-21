@@ -437,10 +437,200 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'networking-fundamentals',
+    number: 3,
+    mono: 'NW',
+    title: 'Networking Fundamentals',
+    outcome: 'Understand the traffic path before learning Azure networking.',
+    chapters: [
+      {
+        id: 'network-basics',
+        title: 'Network basics: IP, MAC, ports, protocols',
+        concept:
+          "Every device on a network has a MAC address (physical, burned into the network card, only meaningful on the local segment) and can have an IP address (logical, routable across networks). A port is a number (0-65535) that lets one IP address run many independent services at once — an IP address gets you to the machine, a port gets you to the specific process on it. Protocols (TCP, UDP, ICMP) define the rules for how data actually moves: TCP is connection-oriented and guarantees delivery/order (what HTTP, SSH rely on), UDP is fire-and-forget with no guarantees (used where speed matters more than reliability, like DNS queries or video streaming), ICMP carries control/diagnostic messages (what `ping` uses).",
+        whyDevops:
+          "This vocabulary is the atomic unit everything else in networking is built from. Reading a firewall rule, an NSG rule, or a `netstat` line is meaningless without knowing which of these four things (IP, MAC, port, protocol) each field represents.",
+        handsOn: [
+          { label: 'See it in your own docker-compose stack', code: 'netstat -ano | grep LISTENING | grep -E ":8000|:6379|:6333|:5173"' },
+        ],
+        troubleshooting: [
+          'Two services conflict on the same port → only one process can bind a given IP:port:protocol combination at a time; the second one fails to start, not silently shares it.',
+        ],
+        interview: [
+          'What\'s the practical difference between an IP address and a MAC address?',
+          'Why does TCP guarantee delivery but UDP doesn\'t, and why would you ever want UDP anyway?',
+        ],
+        azureConnection:
+          'The docker-compose stack for this project shows this directly: Redis (6379) and Qdrant (6333) are bound to `127.0.0.1` only — reachable by IP+port from this machine alone — while the frontend (5173/nginx) and backend (8000/FastAPI) bind `0.0.0.0`, reachable from any interface. Same distinction Azure NSGs enforce at the network level in Module 6.',
+      },
+      {
+        id: 'osi-tcpip',
+        title: 'OSI and TCP/IP models',
+        concept:
+          "The OSI model's 7 layers (Physical, Data Link, Network, Transport, Session, Presentation, Application) and TCP/IP's simpler 4-layer version (Link, Internet, Transport, Application) describe the same reality at different granularity. The value isn't memorizing layer names — it's using them as troubleshooting boundaries: is this a cabling issue (L1), a switching issue (L2/MAC), a routing issue (L3/IP), a connection issue (L4/TCP port), or an application issue (L7/HTTP)? Each layer only needs to trust the guarantees of the layer below it, which is what lets the internet be built from swappable, independently-evolving pieces.",
+        whyDevops:
+          '"Is this a networking problem or an application problem" is one of the most common diagnostic forks in DevOps work, and the OSI layers are the mental checklist for answering it systematically instead of guessing.',
+        handsOn: [
+          { label: 'Map a real request to layers', code: '# curl https://github.com touches:\n# L3 (IP routing) -> L4 (TCP handshake + port 443) -> L7 (TLS + HTTP request/response)\ncurl -v https://github.com 2>&1 | head -15' },
+        ],
+        troubleshooting: [
+          '`curl` hangs with no response at all → likely L3/L4 (routing or a firewall silently dropping the connection), not an application bug — a 500 error, by contrast, is definitely L7.',
+        ],
+        interview: [
+          'A user reports "the website is down" — walk through which OSI layers you\'d check, in order.',
+          'Why does TCP/IP\'s 4-layer model collapse OSI\'s top three layers into one?',
+        ],
+        azureConnection:
+          'An NSG rule operates at L3/L4 (IP + port + protocol) — it has no idea what HTTP method or path is being requested. That\'s exactly why Application Gateway/WAF (L7, Module 6) exists as a separate layer for path-based routing and payload inspection.',
+      },
+      {
+        id: 'ipv4-cidr',
+        title: 'IPv4 and CIDR',
+        concept:
+          "An IPv4 address is 32 bits, written as four decimal octets (e.g. `10.0.1.4`). CIDR notation (`10.0.0.0/16`) specifies how many leading bits are the fixed 'network' portion — the rest are usable for hosts. A `/16` gives 65,536 addresses (2^16), a `/24` gives 256 (2^8), a `/26` gives 64. Private address ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) are reserved for internal networks and never routed on the public internet — this is exactly what a VNet's address space is built from.",
+        whyDevops:
+          "Every VNet, subnet, and NSG source/destination range you'll write from Module 6 onward is CIDR notation. Being able to look at `10.0.1.0/24` and immediately know it's 256 addresses from `10.0.1.0` to `10.0.1.255` (with the first and last reserved by Azure, plus a few more) is a baseline, not an advanced skill.",
+        handsOn: [
+          { label: 'Practice the math', code: '# /24 = 256 addresses, /26 = 64, /28 = 16\n# 10.0.1.0/24  -> 10.0.1.0 - 10.0.1.255\n# 10.0.2.0/26  -> 10.0.2.0 - 10.0.2.63   (this was AzureBastionSubnet\'s size in an earlier draft)' },
+        ],
+        troubleshooting: [
+          'A subnet creation fails with an overlapping range error → two subnets\' CIDR blocks intersect; sketch the ranges out numerically before assuming it\'s a permissions issue.',
+        ],
+        interview: [
+          'How many usable addresses are in a /27? How would you calculate that without a tool?',
+          'Why are 10.x, 172.16-31.x, and 192.168.x reserved instead of routable on the public internet?',
+        ],
+        azureConnection:
+          "azureops-vm01's default VNet uses a private CIDR range (10.0.0.0/16 in an earlier drafted design) — the same private-range convention Module 6's from-scratch VNet/subnet/NSG lab will use explicitly instead of relying on Azure's auto-created defaults.",
+      },
+      {
+        id: 'dns',
+        title: 'DNS and name resolution',
+        concept:
+          "DNS translates human-readable names (github.com) to IP addresses. A records point a name to an IPv4 address; CNAME records alias one name to another; TXT records hold arbitrary text (often used for domain ownership verification). Resolution is hierarchical: your resolver asks a recursive resolver (often your router or ISP), which — if not cached — queries root servers, then TLD servers (.com), then the domain's authoritative nameserver for the final answer. TTL controls how long a result can be cached before it must be re-checked.",
+        whyDevops:
+          "DNS misconfiguration or propagation delay is one of the most common causes of \"it works for me but not for you\" — different resolvers/caches see different states during a TTL window. Custom domains (devopspk.online, Module 13's Front Door work) live entirely in this system.",
+        handsOn: [
+          { label: 'Resolve a real name and see the resolver chain', code: 'nslookup github.com' },
+        ],
+        troubleshooting: [
+          "`nslookup` shows `DNS request timed out` before eventually succeeding → the first resolver(s) it tried didn't answer in time and it fell back; this happened live in this session against `EARTH-4222.bbrouter` before the actual A record came back — normal, but worth noticing if it happens consistently, since it points at a flaky local resolver.",
+          'A DNS change "isn\'t working yet" → check the TTL on the old record; it can take up to that long to expire from caches everywhere, not just yours.',
+        ],
+        interview: [
+          'What\'s the difference between a recursive resolver and an authoritative nameserver?',
+          'Why might a DNS change appear live for you but not for someone else, immediately after making it?',
+        ],
+        azureConnection:
+          "When devopspk.online's A record eventually points at a VM/LB/Front Door IP (deferred goal, tracked in PLAN.md for Module 13), this is exactly the mechanism that makes it resolve — plus GoDaddy's DNS panel already sitting ready per the Day 0 plan.",
+      },
+      {
+        id: 'http-https-tls',
+        title: 'HTTP/HTTPS and TLS',
+        concept:
+          "HTTP is a request/response protocol: a method (GET, POST, PUT, PATCH, DELETE), headers, and optionally a body, answered with a status code and its own headers/body. Status codes group by meaning: 2xx success, 3xx redirect, 4xx client error (400 bad request, 401 unauthenticated, 403 forbidden/authenticated-but-not-allowed, 404 not found), 5xx server error (500 unhandled exception, 502 bad gateway — an upstream proxy got an invalid response, 503 service unavailable, 504 gateway timeout). TLS wraps the connection in encryption before any HTTP happens: a handshake negotiates a shared key using the server's certificate (issued by a trusted CA) to prove identity, then all HTTP traffic over that connection is encrypted — this is the difference between HTTP and HTTPS.",
+        whyDevops:
+          "Status codes are the first diagnostic signal in almost every incident — 401 vs 403 vs 404 vs 500 vs 502 each point at a completely different layer of the system being broken, and confusing them wastes debugging time.",
+        handsOn: [
+          { label: 'Watch the TLS handshake and status code happen', code: 'curl -v https://github.com 2>&1 | head -25' },
+          { label: 'Check status only', code: 'curl -I https://github.com' },
+        ],
+        troubleshooting: [
+          '502 vs 503 vs 504, know the difference: 502 means a proxy/gateway got a bad response FROM the backend (backend is reachable but broken), 503 means the service is deliberately not accepting requests (overloaded, in maintenance), 504 means the proxy gave up waiting for a response (backend is slow or hung, not necessarily broken).',
+        ],
+        interview: [
+          'A user reports a 403 on an endpoint that returns 200 for you — what\'s your hypothesis?',
+          'Explain what TLS actually protects against, and what it does NOT protect against (e.g. a compromised endpoint).',
+        ],
+        azureConnection:
+          "This session's live curl showed the actual handshake: TCP connect on 443, TLS negotiation (visible as `schannel: renegotiating SSL/TLS connection` on Windows), then the HTTP GET and its 200 response — the same sequence a browser does silently for `https://devopspk.online` once TLS is set up via certbot (Module 6) or Front Door-managed certs (Module 13).",
+      },
+      {
+        id: 'routing-nat',
+        title: 'Routing and NAT',
+        concept:
+          "A default gateway is where a device sends traffic destined outside its own local network — a router that knows (or knows how to find out) the next hop toward the destination. Route tables map destination ranges to next hops; a packet gets forwarded hop by hop, each router only needing to know the next step, not the whole path. NAT (Network Address Translation) lets many private IP addresses share one public IP for outbound traffic — SNAT rewrites the source address on the way out, DNAT rewrites the destination address on the way in (used for port-forwarding a public IP to an internal private one).",
+        whyDevops:
+          "This is why a VM with only a private IP can still reach the internet outbound (via NAT through the VNet's default routing) while remaining unreachable inbound without an explicit public IP or load balancer — the asymmetry is intentional and is the basis of most secure network designs.",
+        handsOn: [
+          { label: 'See the hop-by-hop path', code: 'tracert -h 6 github.com' },
+        ],
+        troubleshooting: [
+          'A `*` in traceroute output at one hop, but successful hops before and after → that router is dropping/deprioritizing ICMP, not that the path is broken — this happened live in this session at hop 4 and 6, with successful hops on either side.',
+        ],
+        interview: [
+          'What does a default gateway actually do when a device sends traffic to an address outside its subnet?',
+          'What\'s the difference between SNAT and DNAT, and where would you use each?',
+        ],
+        azureConnection:
+          'A live traceroute to github.com in this session showed the real path: home router (private IP 192.168.1.1) -> ISP gateway -> ISP backbone (Delhi) -> Microsoft\'s network -> destination — the same private-to-public transition an Azure VM\'s outbound NAT performs, just visible hop by hop here.',
+      },
+      {
+        id: 'firewalls',
+        title: 'Firewalls',
+        concept:
+          "A host firewall (like Windows Firewall or `ufw` on Linux) filters traffic to/from a single machine; a network firewall filters traffic at a network boundary, affecting everything behind it. Rules are evaluated by priority and typically default-deny: an explicit allow rule is required, everything else is blocked. Stateful filtering (what almost all modern firewalls do) tracks connections — once an outbound connection is allowed, its return traffic is automatically permitted without needing a separate inbound rule, unlike a stateless filter which would need both directions defined explicitly.",
+        whyDevops:
+          "Azure NSGs are exactly this model: default-deny, priority-ordered, stateful. The default-allow-ssh rule created automatically at priority 1000 and the explicit open-port-8000 rule added later in this project are literal examples of writing default-deny firewall rules.",
+        handsOn: [
+          { label: 'Read a real NSG ruleset the same way you\'d read a firewall config', code: '# from Phase 1 of this project:\n# priority 900  Allow Tcp 8000 Inbound  (explicit, added later)\n# priority 1000 Allow Tcp 22   Inbound  (default, added at VM creation)\n# priority 65500 Deny *  *     Inbound  (implicit default-deny, always last)' },
+        ],
+        troubleshooting: [
+          'A service works locally on a host but not from outside → check the host firewall AND the network firewall/NSG separately; either one blocking is enough to cause this, and they fail identically from the client\'s perspective.',
+        ],
+        interview: [
+          'What does "stateful" mean in the context of a firewall, and why does it reduce the number of rules you need to write?',
+          'Why is default-deny safer than default-allow-with-exceptions, from a security posture standpoint?',
+        ],
+        azureConnection:
+          "This was a real bug in Phase 1: the app worked via `curl localhost:8000` on the VM but failed externally, because the NSG (a stateful, default-deny network firewall) only had port 22 allowed — port 8000 needed an explicit rule before external traffic could reach it, confirmed and fixed with `az vm open-port`.",
+      },
+      {
+        id: 'load-balancing-reverse-proxy',
+        title: 'Load balancing and reverse proxy',
+        concept:
+          "A load balancer distributes incoming traffic across multiple backend instances, usually based on a health probe (only sending traffic to instances that report healthy). L4 load balancing operates on IP/port alone, unaware of HTTP; L7 (a reverse proxy, like nginx or Application Gateway) understands HTTP and can route by path/header/hostname, terminate TLS, and rewrite requests. A reverse proxy sits in front of one or more backend servers and forwards client requests to them, returning the response as if it came from the proxy itself — the client never talks to the backend directly.",
+        whyDevops:
+          "This is the architectural difference behind Module 6's Load Balancer, Application Gateway, and Front Door — same underlying concept (route and possibly balance traffic), different layer of awareness and different scope (VNet-local vs global edge).",
+        handsOn: [
+          { label: 'Nginx already doing this in the project', code: 'cat frontend/nginx.conf' },
+        ],
+        troubleshooting: [
+          'One backend instance behind a load balancer is silently getting no traffic → check its health probe response specifically; LBs remove unhealthy targets from rotation without necessarily surfacing why.',
+        ],
+        interview: [
+          'What\'s the practical difference between L4 and L7 load balancing, and when would path-based routing require L7?',
+          'What does a reverse proxy do that a plain load balancer doesn\'t?',
+        ],
+        azureConnection:
+          "The frontend container already runs nginx as a reverse proxy in front of the built React app — the same role, at smaller scale, that Azure Load Balancer (Module 2 of the roadmap... i.e. Week 2's original VMSS work, now Module 6) will play in front of multiple VM instances.",
+      },
+      {
+        id: 'troubleshooting-toolkit',
+        title: 'Network troubleshooting with ping, traceroute, curl, ss/netstat, nslookup/dig',
+        concept:
+          "A standard diagnostic sequence for \"can't reach X\": `ping` (is the host reachable at all, L3) -> `tracert`/`traceroute` (where does it break along the path) -> `nslookup`/`dig` (is DNS resolving to the right address) -> `curl -v` (is the TCP/TLS/HTTP layer working, and what's the actual response) -> `netstat`/`ss` (locally: is something actually listening on the port you expect). Running these roughly in this order narrows down which layer is broken fastest.",
+        whyDevops:
+          "This exact sequence — rather than the tools individually — is the actual skill. Knowing five tools in isolation is much less useful than knowing the order to run them in in order to narrow down a failure fast under pressure.",
+        handsOn: [
+          { label: 'The full sequence, run for real in this session', code: 'nslookup github.com\ntracert -h 6 github.com\ncurl -v https://github.com\nnetstat -ano | grep LISTENING' },
+        ],
+        troubleshooting: [
+          'All four tools succeed individually but the app "still doesn\'t work" → the issue is likely application-layer (L7) logic, not network — DNS/TCP/TLS all being fine rules out everything below the application itself.',
+        ],
+        interview: [
+          'Someone says "I can\'t reach the app" — what\'s the first command you run, and why that one first?',
+          'How do ping and curl differ in what they actually test?',
+        ],
+        azureConnection:
+          "This exact sequence was used live in this project to diagnose the port-8000 issue: `curl localhost:8000` worked (app itself fine) but external `curl http://<public-ip>:8000` failed (network layer broken) — narrowing straight to the NSG without guessing.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
-  { number: 3, title: 'Networking Fundamentals', outcome: 'Understand the traffic path before learning Azure networking.' },
   { number: 4, title: 'Docker', outcome: 'Package, run, debug, and publish applications as containers.' },
   { number: 5, title: 'Azure Fundamentals', outcome: 'Navigate Azure and choose basic services deliberately.' },
   { number: 6, title: 'Azure Networking', outcome: 'Understand how Azure traffic flows from the internet to the application.' },

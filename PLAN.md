@@ -304,6 +304,21 @@ isn't lost. When picked up, it belongs after Module 6 (Azure Networking,
 custom VNet/NSG/LB) and pairs with Module 13's chapters (Front Door
 architecture, custom domains/TLS, WAF at the edge).
 
+## Deferred decision — app-tier Load Balancer: managed vs. software
+
+2026-09-21: `azureops-lb` (Azure Standard Load Balancer, Module 6 Chapter 5)
+is being kept running for now for direct comparison against the
+cost-conscious choices made elsewhere in this module (Chapter 7's software
+WAF). Explicit decision: **defer the final managed-vs-software call for the
+app tier until Module 9**, when the Qdrant 3-node cluster is built — at
+that point, design one consistent software-LB approach (e.g. HAProxy) that
+can inform (or directly cover) both the app tier (`app-vm1`/`app-vm2`,
+currently behind `azureops-lb`) and whatever fronts the Qdrant cluster,
+rather than making two separate one-off decisions. Note these are related
+but distinct problems: the app tier is plain HTTP load balancing; Qdrant
+has its own internal Raft-based clustering, so its "load balancing" need
+is more likely a thin connection proxy than a full LB replacement.
+
 ## Out of scope initially
 
 Jenkins, AWS/GCP breadth, deep database internals, advanced distributed-systems theory, and large-scale platform engineering are deferred until the core Azure DevOps path is complete.

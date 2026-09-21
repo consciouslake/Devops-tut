@@ -650,3 +650,38 @@ All 10 chapters done, all built and verified for real:
 Two deferred decisions tracked for later modules: `devopspk.online` + Front Door (Module 13), and the managed-vs-software Load Balancer final call (Module 9, alongside the Qdrant cluster).
 
 Six modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking.
+
+---
+
+## Roadmap reorder — Terraform moved to Module 13 — 2026-09-21
+
+**What happened:** User asked to move Terraform to the end of the roadmap, reasoning that consolidating IaC once — after all the manual infrastructure work exists to actually capture — makes more sense than learning Terraform syntax mid-sequence before most of what it would express is even built yet. Renumbered Modules 9-13 down to 8-12 across `PLAN.md`, `CURRICULUM.md`, `README.md`, and the frontend curriculum browser, including cross-references inside Module 6's own chapter content that pointed at the old Kubernetes/Front Door module numbers.
+- **Real mistake made and caught:** committed the renumbering on `phase6-azure-networking` but never explicitly pushed it before the user merged that branch's PR on GitHub — the commit existed locally and (eventually) on the remote branch, but never reached `main` via that PR. Caught when the next session's `git pull` showed stale module numbers despite the "merge" having happened. Recovered cleanly: the commit was still reachable on the pushed (but now-orphaned) remote branch, cherry-picked it onto a fresh branch off `main`, verified the fix, and got it merged via a second small PR (`fix-terraform-reorder`).
+- **Lesson:** after making a commit intended for an already-open or about-to-be-merged PR, explicitly push immediately — don't assume a later "sync" step will catch a forgotten push; verify the actual file state on `main` after any merge before treating a module complete, rather than trusting that the working branch and the merged PR are automatically the same thing.
+
+New roadmap order: ... 7 CI/CD, 8 Kubernetes Fundamentals, 9 AKS, 10 Monitoring, 11 Security, 12 Front Door, 13 Terraform, Capstone.
+
+---
+
+## Module 7 — CI/CD with GitHub Actions, Chapters 1-6 — 2026-09-21
+
+**Plan item(s):** Module 7, Chapters 1-6 — CI vs CD, workflow syntax, runners/jobs/parallelism, artifacts/caching/matrices, secrets/environments, build+test Python/FastAPI.
+
+**What I did:**
+- Reviewed the real, existing `.github/workflows/ci.yml` (built back in Module 2: gitleaks, backend pytest, frontend build jobs) rather than introducing a fresh toy workflow — every chapter's hands-on material references this actual file.
+- Assessed this project's CI/CD maturity honestly: real CI exists (tests run automatically on every push), but zero CD before this module — every deployment so far (the Phase 1 VM, `app-vm1`/`app-vm2`) was done manually, live in a terminal.
+- Named a real, previously-unaddressed gap rather than skipping over it: `ci.yml` uses no dependency caching and no build matrix — small impact today (one Python version, fast installs), but the Artifacts/Caching/Matrices chapter uses this project's own gap as the example instead of a hypothetical one.
+- Verified the backend pytest job's claim locally rather than assuming it: `cd backend && pytest` → `1 passed`. Surfaced an unrelated real finding while doing so — `rag.py`'s `import google.generativeai as genai` is now deprecated in favor of the `google.genai` package (a `FutureWarning` in the test output); noted for later, not acted on yet since it's out of scope for this chapter.
+- Wrote full chapter content for Chapters 1-6 into the frontend curriculum browser, using the real `ci.yml` throughout instead of generic examples.
+
+**Commands used:**
+```bash
+cat .github/workflows/ci.yml
+cd backend && pytest
+```
+
+**What broke / what I learned:**
+- Nothing broke this session — a clean, low-risk set of chapters since they're primarily reviewing and correctly labeling work already done in Module 2, not building new infrastructure.
+- Google's `google-generativeai` Python package is deprecated in favor of `google-genai` — worth a future migration pass on `backend/rag.py`, tracked here rather than acted on immediately since it wasn't part of this module's scope.
+
+**Cost check:** No new spend — pure CI review and verification. Chapter 8 (Azure Container Registry) will introduce the first new cost in this module, to be confirmed with the user before creating it.

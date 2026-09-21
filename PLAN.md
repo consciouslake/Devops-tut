@@ -137,6 +137,8 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** create a repeatable build-test-scan-deploy pipeline.
 
+**Status (2026-09-21):** In progress — Chapters 1-6 done, built directly on the real `ci.yml` from Module 2 (gitleaks/backend/frontend jobs) rather than a fresh example: CI vs CD lifecycle assessed honestly (this project has real CI, zero CD before this module), workflow syntax/runners/parallelism reviewed against the actual file, the real caching/matrix gap named rather than glossed over, secrets/environments explained via the already-used `GITHUB_TOKEN` pattern, and the backend pytest job verified locally (`1 passed`) — also surfaced a real, unrelated finding: `google.generativeai` (used in `rag.py`) is deprecated in favor of `google.genai`, noted for later, not yet acted on. Chapters 7-11 (Docker build+scan, ACR push, deploy, OIDC, rollback) remaining — Chapter 8 (ACR) needs a new small-cost Azure resource, to be confirmed before creating. Full chapter content for 1-6 written in the frontend curriculum browser. See LEARNING_LOG.md "Module 7" for details.
+
 ### Module 8 — Kubernetes Fundamentals
 
 1. Why orchestration

@@ -1301,6 +1301,134 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'cicd-github-actions',
+    number: 7,
+    mono: 'CI',
+    title: 'CI/CD with GitHub Actions',
+    outcome: 'Create a repeatable build-test-scan-deploy pipeline.',
+    chapters: [
+      {
+        id: 'ci-vs-cd',
+        title: 'CI vs CD and deployment lifecycle',
+        concept:
+          "Continuous Integration (CI) is the practice of automatically building and testing every change as soon as it's pushed — catching breakage within minutes instead of at release time. Continuous Delivery/Deployment (CD) extends that pipeline to actually ship the change: Delivery means it's automatically packaged and ready to deploy with a manual approval gate; Deployment means it goes live with no human in the loop at all. The full lifecycle: commit -> build -> test -> scan -> package -> (approve) -> deploy -> verify -> (rollback if needed). Every stage exists to catch a different class of problem before it reaches production.",
+        whyDevops:
+          "This vocabulary distinction matters in interviews and in practice — \"we do CI/CD\" often actually means \"we do CI\" (tests run automatically) without real CD (deploys still require someone to manually SSH in and run a script), which is exactly this project's state before this module: real tests, zero automated deployment.",
+        handsOn: [
+          { label: 'This project\'s current lifecycle stage, honestly assessed', code: '# CI: yes -- .github/workflows/ci.yml runs gitleaks + pytest + frontend build on every push\n# CD: no -- every deployment so far (Phase 1 VM, app-vm1/app-vm2) was done by hand, live in a terminal' },
+        ],
+        troubleshooting: [
+          'Calling a pipeline "CI/CD" when it only runs tests → be precise: that\'s CI alone. CD specifically requires an automated path to a running deployment, which this project doesn\'t have yet.',
+        ],
+        interview: [
+          'What\'s the practical difference between Continuous Delivery and Continuous Deployment?',
+          'Why might a team deliberately choose Continuous Delivery (manual approval) over full Continuous Deployment even with a mature test suite?',
+        ],
+        azureConnection:
+          'This module\'s job is to take this project from "CI only" to a real, automated path to Azure — building and scanning a Docker image, pushing it to a registry, and deploying it, authenticated without a single stored password.',
+      },
+      {
+        id: 'workflow-syntax',
+        title: 'GitHub Actions workflow syntax',
+        concept:
+          "A workflow is a YAML file in `.github/workflows/`. `on:` defines triggers (push, pull_request, schedule, manual dispatch). `jobs:` contains one or more named jobs, each running on a fresh `runs-on:` VM. `steps:` within a job run sequentially — either `uses:` (a reusable action, like `actions/checkout@v4`) or `run:` (a raw shell command). `defaults.run.working-directory` sets a default folder for all `run:` steps in a job, avoiding repetitive `cd` commands.",
+        whyDevops:
+          "Reading and writing this syntax fluently is a daily skill from here on — every chapter in this module extends the same real file rather than introducing a new toy example.",
+        handsOn: [
+          { label: 'The real, current ci.yml', code: 'cat .github/workflows/ci.yml' },
+        ],
+        troubleshooting: [
+          'A step fails with "command not found" for a tool assumed to be pre-installed → GitHub-hosted runners have a specific, documented toolset per OS image; anything else needs an explicit setup action (like `actions/setup-python`) or install step.',
+        ],
+        interview: [
+          'What\'s the difference between `uses:` and `run:` in a workflow step?',
+          'Why does each job get its own fresh runner instead of jobs sharing one machine?',
+        ],
+        azureConnection:
+          "This project's `backend` job uses exactly this pattern: `defaults.run.working-directory: backend`, then `actions/setup-python@v5`, then plain `run:` steps for `pip install` and `pytest` — no magic, just sequential steps on a fresh Ubuntu VM.",
+      },
+      {
+        id: 'runners-jobs-steps-actions',
+        title: 'Runners, jobs, steps, actions',
+        concept:
+          "A runner is the actual VM (or container) executing a job — GitHub-hosted runners are free (within limits) and ephemeral, torn down after each run; self-hosted runners are your own machines, useful for private network access or specialized hardware. Jobs in the same workflow run in parallel by default unless one explicitly `needs:` another — this project's `gitleaks`, `backend`, and `frontend` jobs all run simultaneously, independent of each other, which is why the whole pipeline finishes in roughly the time of the slowest single job, not the sum of all three.",
+        whyDevops:
+          "Understanding parallel-by-default is what lets you design fast pipelines — serializing jobs that don't actually depend on each other is a common, easy-to-fix source of slow CI.",
+        handsOn: [
+          { label: 'This project\'s three jobs — no needs: between them, so they run in parallel', code: 'grep -A1 "^  [a-z]*:" .github/workflows/ci.yml | grep -v "^--"' },
+        ],
+        troubleshooting: [
+          'A job that should wait for another finishes (or fails) before that dependency is ready → missing `needs: [other-job-name]`; without it, GitHub Actions assumes independence and runs everything it can in parallel.',
+        ],
+        interview: [
+          'Why do gitleaks/backend/frontend all finish around the same time in this project\'s CI, rather than one after another?',
+          'When would you choose a self-hosted runner over a GitHub-hosted one?',
+        ],
+        azureConnection:
+          "Once a `deploy` job is added later in this module, it will need `needs: [backend, frontend, docker-build]` — deployment should only happen after everything upstream has actually passed, unlike the current three jobs which are intentionally independent.",
+      },
+      {
+        id: 'artifacts-caching-matrices',
+        title: 'Artifacts, caching, matrices',
+        concept:
+          "An artifact is a file (or set of files) produced by one job and made available to download or pass to another job — e.g. a built frontend `dist/` folder, or a compiled binary. Caching (like `actions/setup-python`'s built-in pip cache, or `actions/cache` generally) persists dependency downloads between runs so `pip install`/`npm install` don't re-download everything from scratch every single time — a major speed win once a project's dependency list grows. A matrix runs the same job multiple times with different parameter combinations (e.g. Python 3.10/3.11/3.12) in parallel, catching version-specific breakage without writing the job three times.",
+        whyDevops:
+          "None of this project's current CI uses caching or matrices yet — a real, honest gap worth naming rather than pretending it's optimized. Small now (fast installs, one Python version), but the exact kind of thing that becomes a real cost/speed problem as a project grows and gets ignored because it \"works fine.\"",
+        handsOn: [
+          { label: 'What adding pip caching would look like (not yet done)', code: "- uses: actions/setup-python@v5\n  with:\n    python-version: '3.11'\n    cache: 'pip'   # <- not currently in this project's ci.yml" },
+        ],
+        troubleshooting: [
+          'CI feels slow and nobody knows why → check whether dependency installation is being cached at all; re-downloading the same packages on every single run is a common, invisible source of wasted minutes.',
+        ],
+        interview: [
+          'What\'s the difference between an artifact and a cache in GitHub Actions?',
+          'When would a build matrix be worth the added complexity?',
+        ],
+        azureConnection:
+          "A Docker image (Chapter 7) is conceptually an artifact too — the thing one job (build) produces that a later job (push/deploy) consumes, just using a container registry instead of GitHub's own artifact storage.",
+      },
+      {
+        id: 'secrets-environments',
+        title: 'Secrets and environments',
+        concept:
+          "GitHub Secrets (repo or organization-level) are encrypted values injected as environment variables at runtime, never visible in logs (GitHub automatically masks a secret's value if it ever appears in output) and never readable back through the API once set. GitHub Environments add a named deployment target (e.g. \"production\") with optional protection rules — required reviewers, wait timers, or restricting which branches can deploy to it — giving a real approval gate without a separate tool.",
+        whyDevops:
+          "This is the mechanism Chapter 10's OIDC setup replaces entirely for Azure auth specifically (no stored secret needed at all), but Secrets/Environments remain the right tool for anything that genuinely needs one (a third-party API key, for instance).",
+        handsOn: [
+          { label: 'Already used once in this project', code: "env:\n  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # gitleaks job, ci.yml -- GITHUB_TOKEN is auto-provided, no manual setup needed" },
+        ],
+        troubleshooting: [
+          'A secret value shows up in workflow logs unmasked → GitHub only masks exact matches of the registered secret value; if a step transforms/encodes it first (base64, etc.) before printing, the transformed version won\'t be masked — avoid ever deliberately printing a secret, transformed or not.',
+        ],
+        interview: [
+          'How does GitHub prevent a secret from leaking into build logs?',
+          'What does a required reviewer on a GitHub Environment actually gate?',
+        ],
+        azureConnection:
+          "The eventual `deploy` job will use a GitHub Environment (e.g. `production`) so deployment to Azure requires the same kind of deliberate gate this project already applies to Azure IAM changes (declining to self-assign roles autonomously, back in Module 5) — a human in the loop for anything that changes what's actually running.",
+      },
+      {
+        id: 'build-test-fastapi',
+        title: 'Build and test Python/FastAPI',
+        concept:
+          "This chapter has no new material — `ci.yml`'s `backend` job already does exactly this: checkout, set up Python 3.11, `pip install -r requirements.txt`, `pytest`. It runs on every push and pull request, so a broken backend test fails visibly before merge, not after.",
+        whyDevops:
+          "Confirming something already works, with evidence, is still real verification — not everything in a curriculum needs a new build to be worth checking.",
+        handsOn: [
+          { label: 'Run the same thing locally that CI runs', code: 'cd backend\npip install -r requirements.txt\npytest' },
+        ],
+        troubleshooting: [
+          'Tests pass locally but fail in CI → almost always an environment difference (a missing env var CI doesn\'t have, a dependency version pinned differently, or a test that accidentally depends on local state/files that don\'t exist on a fresh runner).',
+        ],
+        interview: [
+          'Why run the exact same test command in CI as you would locally, rather than a CI-specific test invocation?',
+        ],
+        azureConnection:
+          "This job is the first gate in what will become the full pipeline: backend tests -> Docker build+scan -> push to ACR -> deploy — nothing downstream should run if this fails, which is why the eventual `docker-build` job will declare `needs: [backend, frontend]`.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [

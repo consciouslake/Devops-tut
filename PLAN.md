@@ -282,6 +282,16 @@ For each chapter:
 - Milestone 7: Observability + security
 - Milestone 8: Front Door + multi-region capstone
 
+## Deferred goal — devopspk.online via Azure Front Door
+
+2026-09-21: explicit end goal — publish the AzureOps Copilot frontend on
+`devopspk.online` through Azure Front Door, as hands-on practice for
+Module 13. Deliberately deferred until Phase 1 (Linux fundamentals) is
+finished, per the foundations-first philosophy above — tracked here so it
+isn't lost. When picked up, it belongs after Module 6 (Azure Networking,
+custom VNet/NSG/LB) and pairs with Module 13's chapters (Front Door
+architecture, custom domains/TLS, WAF at the edge).
+
 ## Out of scope initially
 
 Jenkins, AWS/GCP breadth, deep database internals, advanced distributed-systems theory, and large-scale platform engineering are deferred until the core Azure DevOps path is complete.

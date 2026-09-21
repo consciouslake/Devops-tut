@@ -141,4 +141,43 @@ sudo kill <pid>   # then watched systemd auto-restart via journalctl -u pyapp
 - `az vm create` with default (auto-created) networking only opens SSH (port 22). Any other port the app needs must be opened explicitly with `az vm open-port` or an NSG rule — a working `curl localhost:8000` on the VM itself proves nothing about external reachability.
 - A Docker container serving a built frontend bundle doesn't reflect source changes until rebuilt — `docker compose up -d --build <service>` needed, hot-reload only applies to a real dev server.
 
-**Cost check:** `rg-linux-lab` (VM + disk + public IP) and `bob-test-rg` (Container Registry) deleted — stopped an unrelated, unbudgeted spend. `azureops-vm01` (Standard_B2s_v2, southindia) is running — deallocate or delete at end of session. Budget corrected to ₹16,600/month, subscription-wide, alerts still enabled at 50/75/90% to praveen@devopspk.online.
+**Cost check:** `rg-linux-lab` (VM + disk + public IP) and `bob-test-rg` (Container Registry) deleted — stopped an unrelated, unbudgeted spend. `azureops-vm01` (Standard_B2s_v2, southindia) deallocated at end of session. Budget corrected to ₹16,600/month, subscription-wide, alerts still enabled at 50/75/90% to praveen@devopspk.online.
+
+---
+
+## Module 2 — Git & GitHub — 2026-09-21
+
+**Plan item(s):** Module 2 — version control mental model, core workflow, undo (restore/reset/revert/reflog), branches/PRs, merge conflicts/rebase, repo hygiene + gitleaks, GitHub Issues/Projects, GitHub Actions intro, troubleshooting lab.
+
+**What I did:**
+- Opened and merged a real PR (`phase1-linux-vm` → `main`) covering the whole Phase 1 session — 3 CI checks passed before merge.
+- Resolved a real merge conflict earlier in the session (not staged as an exercise).
+- Practiced undo commands deliberately: made a throwaway commit, undid it with `git revert` (safe for shared/pushed history — creates a new commit rather than rewriting), then used `git reset --soft` to collapse the scratch+revert pair back to a clean state (safe only because neither commit had been pushed), and confirmed via `git reflog` that both "removed" commits were still recoverable by hash even though `git log` no longer showed them.
+- Found gitleaks (secret scanning) had never actually been set up despite being in the original Day 0 plan. Added `.pre-commit-config.yaml` (gitleaks pre-commit hook) and a `gitleaks` job in `.github/workflows/ci.yml`. Verified it actually works: a realistic fake AWS key blocked the commit (exit code 1); gitleaks' own well-known placeholder example key (`AKIAIOSFODNN7EXAMPLE`) correctly passed (allowlisted to avoid flagging docs/tutorials) — first test used a malformed key that accidentally didn't match the regex at all, had to redo it with a valid-length key to get a real signal.
+- Confirmed `backend/.env` is genuinely gitignored (`git check-ignore -v`).
+- Created a GitHub Project board (Backlog/In Progress/Done) for active work items, separate from PLAN.md/CURRICULUM.md which hold the fixed curriculum.
+- Wrote full chapter content for all 9 chapters of Module 2 into the frontend curriculum browser, using this session's real Git work as the examples instead of generic ones.
+
+**Commands used:**
+```bash
+git branch -m day1-vnet-vm phase1-linux-vm
+git fetch origin && git checkout main && git pull origin main
+git branch -d phase1-linux-vm   # after merge
+git checkout phase2
+
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+
+# undo practice
+git commit -m "scratch: undo-practice commit (will be reverted)"
+git revert --no-edit HEAD
+git reset --soft <prior-commit>
+git reflog -5
+```
+
+**What broke / what I learned:**
+- A `git reset --hard` mid-session wiped an uncommitted edit to `ci.yml` along with the intended test file — had to redo the edit. Lesson: `reset --hard` discards *all* uncommitted changes, not just the ones you're thinking about; check `git status` immediately before running it.
+- gitleaks allowlists well-known placeholder secrets from documentation (like AWS's own `AKIAIOSFODNN7EXAMPLE`) to cut false positives — don't use textbook example keys to test whether a secret scanner works, they may be intentionally ignored.
+
+**Cost check:** No new Azure spend this module — pure Git/GitHub work.

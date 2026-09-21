@@ -242,10 +242,204 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'git-github',
+    number: 2,
+    mono: 'GT',
+    title: 'Git & GitHub',
+    outcome: 'Use Git as the control system for infrastructure and application delivery.',
+    chapters: [
+      {
+        id: 'git-mental-model',
+        title: 'Git mental model',
+        concept:
+          "Git tracks a project as a graph of commits, each a full snapshot (not a diff) linked to its parent(s). Three areas matter: the working directory (files as they are on disk), the staging area / index (what you've marked to go into the next commit with `git add`), and the repository (committed history). This staged-then-committed two-step is what lets you build a commit out of only part of what you've changed. Git is distributed — every clone has the full history, not just a pointer to a central server — which is why commits, branching, and most operations work offline and a 'remote' (like GitHub) is just another repository you sync with, not a required authority.",
+        whyDevops:
+          "Git is the substrate everything else in this curriculum sits on: application code, Dockerfiles, Terraform, GitHub Actions workflows — all versioned the same way. Misunderstanding staging vs committing is the single most common source of \"I committed the wrong thing\" or \"my commit is empty\" confusion.",
+        handsOn: [
+          { label: 'See the three areas in action', code: 'git status\ngit diff              # working dir vs staging\ngit diff --staged    # staging vs last commit' },
+        ],
+        troubleshooting: [
+          "`git commit` says \"nothing to commit\" but you definitely changed a file → you edited it but never ran `git add`; changes only move from working directory to staging explicitly.",
+        ],
+        interview: [
+          'What are the three areas Git tracks and how does a change move between them?',
+          'Why is Git called "distributed" version control?',
+        ],
+        azureConnection:
+          'Every file in this repo — PLAN.md, the Terraform that comes in Module 8, the GitHub Actions workflow — moves through this same staged-then-committed model regardless of what kind of file it is.',
+      },
+      {
+        id: 'core-workflow',
+        title: 'Core workflow',
+        concept:
+          '`git init` creates a new repository; `git status` shows what\'s changed and where; `git add` stages; `git commit` snapshots the stage with a message; `git log` shows history; `git diff` shows unstaged changes; `git push`/`git pull` sync with a remote. This handful of commands covers the vast majority of day-to-day work.',
+        whyDevops:
+          'This is the loop you run dozens of times a day. Fluency here isn\'t optional — it\'s the baseline every other Git skill builds on.',
+        handsOn: [
+          { label: 'The daily loop', code: 'git status\ngit add <file>\ngit commit -m "message"\ngit push\ngit pull' },
+          { label: 'Inspect history', code: 'git log --oneline -10\ngit diff HEAD~1' },
+        ],
+        troubleshooting: [
+          '`git push` rejected as non-fast-forward → the remote has commits you don\'t have locally; `git pull` first (or `git fetch` + `git merge`/`rebase` if you want to control how).',
+        ],
+        interview: [
+          'What\'s the difference between `git fetch` and `git pull`?',
+          'What does `git log --oneline` show that plain `git log` doesn\'t, and why is that useful?',
+        ],
+        azureConnection:
+          'This is literally the loop used to ship today\'s Phase 1 work: `git add` the VM/systemd/NSG fixes and the curriculum browser, `git commit`, `git push` on `phase1-linux-vm`, then a PR into `main`.',
+      },
+      {
+        id: 'undo-safely',
+        title: 'Undo safely',
+        concept:
+          "`git restore <file>` discards uncommitted changes in the working directory. `git reset --soft <commit>` moves the branch pointer back but keeps changes staged — safe to use on commits that haven't been pushed, since it rewrites local history. `git revert <commit>` creates a *new* commit that undoes a previous one, leaving history intact — the only safe option once a commit has been pushed/shared, because it doesn't rewrite anything others may have already pulled. `git reflog` records every place HEAD has pointed, including commits no longer reachable from any branch — Git's real safety net, usually good for ~90 days by default.",
+        whyDevops:
+          "Knowing revert-vs-reset-vs-restore, and specifically that reset rewrites history while revert doesn't, is what stops \"undo a mistake\" from becoming \"break everyone else's clone.\" reflog is what turns a panicked \"I lost a commit\" into a two-minute recovery.",
+        handsOn: [
+          { label: 'Local, unpushed commit → reset', code: 'git log --oneline -3\ngit reset --soft HEAD~1   # keeps changes staged\ngit status' },
+          { label: 'Already-pushed commit → revert', code: 'git revert --no-edit HEAD   # creates a new commit undoing the last one' },
+          { label: 'The safety net', code: 'git reflog -5   # every place HEAD has pointed, even "deleted" commits\ngit reset --hard <sha-from-reflog>   # recover one' },
+        ],
+        troubleshooting: [
+          "Used `reset --hard` and lost work that wasn't committed → uncommitted changes aren't in the reflog; only commits are recoverable this way.",
+          '`git revert` on a merge commit fails asking for `-m` → you need to specify which parent (`-m 1`) is the mainline to revert against.',
+        ],
+        interview: [
+          'Why is `git reset` dangerous on a commit that\'s already been pushed and pulled by someone else, but `git revert` isn\'t?',
+          'How would you recover a commit after `git reset --hard` if you no longer see it in `git log`?',
+        ],
+        azureConnection:
+          'Demonstrated live in this project: a throwaway commit was undone with `git revert` (safe, preserves history), then a `git reset --soft` collapsed the revert pair back to a clean state before pushing — with `git reflog` confirming both discarded commits were still recoverable the whole time.',
+      },
+      {
+        id: 'branches-prs',
+        title: 'Branches and pull requests',
+        concept:
+          "A branch is just a movable pointer to a commit — creating one is cheap and instant, which is what makes feature-branch workflows practical. Work happens on a branch isolated from `main`; a pull request proposes merging it back, giving a place for CI to run and for a diff to be reviewed before it lands. A protected `main` branch typically requires passing checks (and often review) before a PR can merge, preventing broken code from landing directly.",
+        whyDevops:
+          "This is the collaboration and safety model behind every production codebase: nothing reaches the branch that gets deployed without going through review and CI first.",
+        handsOn: [
+          { label: 'Branch, then propose', code: 'git checkout -b phase2\n# ...make commits...\ngit push -u origin phase2\n# then open a PR on GitHub' },
+        ],
+        troubleshooting: [
+          'PR shows unrelated commits/files → the branch was likely cut from a stale `main`; rebase or merge `main` into it before continuing.',
+        ],
+        interview: [
+          'Why use a PR instead of pushing straight to main, even if you\'re the only contributor?',
+          'What does a "protected branch" actually enforce?',
+        ],
+        azureConnection:
+          'The `phase1-linux-vm` → `main` PR merged earlier this session, with 3 checks passing (the `ci.yml` jobs), is exactly this workflow — CI ran automatically on the PR before merge was even possible if checks had been required.',
+      },
+      {
+        id: 'merge-conflicts-rebase',
+        title: 'Merge conflicts and rebase',
+        concept:
+          "A conflict happens when Git can't automatically reconcile two branches' changes to the same lines — it marks the file with `<<<<<<<`/`=======`/`>>>>>>>` markers and pauses, waiting for a human decision. Resolving means editing the file to the correct final state, removing the markers, then `git add` + continue. `git merge` creates a merge commit joining two histories; `git rebase` replays one branch's commits on top of another, producing linear history — powerful but rewrites commits, so it should never be done on a branch others have already pulled.",
+        whyDevops:
+          "Conflicts are routine, not exceptional, on any team repo — the skill is calm, systematic resolution, not avoidance. Knowing when rebase is safe (your own unpublished branch) vs dangerous (shared history) prevents a whole class of \"why did everyone's history just change\" incidents.",
+        handsOn: [
+          { label: 'During a conflict', code: 'git status                 # shows conflicted files\n# edit the file, remove <<<<<<< ======= >>>>>>> markers\ngit add <file>\ngit commit                 # (merge) or: git rebase --continue' },
+        ],
+        troubleshooting: [
+          'Rebase gets messy mid-way → `git rebase --abort` returns to the pre-rebase state cleanly, no harm done.',
+          'Merged the wrong direction (target vs source branch swapped) → check `git log --graph` before resolving, not after.',
+        ],
+        interview: [
+          'What\'s the practical difference between merge and rebase, and when would you choose each?',
+          'Why is rebasing a shared/pushed branch considered dangerous?',
+        ],
+        azureConnection:
+          'Already handled directly in this project — a merge conflict earlier in the session was resolved by hand, and the `d134459` merge commit (visible in `git log`) shows a real merge of `main` into `phase1-linux-vm` mid-session.',
+      },
+      {
+        id: 'repo-hygiene',
+        title: 'Repository hygiene',
+        concept:
+          '`.gitignore` prevents specific files/patterns from ever being tracked (build output, secrets, dependencies). Tags mark specific commits as meaningful points (releases); conventional commit messages (`feat:`, `fix:`, `docs:`) make history scannable and can drive automated changelogs. Secret scanning (gitleaks and similar) inspects every commit for patterns that look like credentials before they can land in history — critical because once a secret is pushed, rotating it is the only real fix; deleting the commit doesn\'t remove it from anyone\'s existing clone or GitHub\'s cache.',
+        whyDevops:
+          'A leaked API key or cloud credential in Git history is one of the most common real-world security incidents, and it\'s entirely preventable with a five-minute setup. This is cheap insurance every repo should have from day one, not just "important" ones.',
+        handsOn: [
+          { label: 'Verify a file is actually ignored', code: 'git check-ignore -v backend/.env' },
+          { label: 'Secret scanning, pre-commit and CI', code: 'cat .pre-commit-config.yaml\npre-commit run --all-files' },
+        ],
+        troubleshooting: [
+          'A file that should be ignored still shows in `git status` → it was already tracked before being added to `.gitignore`; `.gitignore` only affects untracked files — remove it from tracking with `git rm --cached <file>`.',
+        ],
+        interview: [
+          'If a secret is accidentally committed and pushed, why isn\'t deleting the commit enough to fix it?',
+          'What\'s the difference between a file being untracked vs gitignored vs removed?',
+        ],
+        azureConnection:
+          "Set up directly in this project: `.pre-commit-config.yaml` runs gitleaks locally before every commit, and `ci.yml` runs the same check in GitHub Actions — verified by testing it against both a real-looking fake AWS key (blocked, exit code 1) and gitleaks' own allowlisted example key (correctly passed, to avoid flagging docs/tutorials).",
+      },
+      {
+        id: 'github-collaboration',
+        title: 'GitHub collaboration',
+        concept:
+          "Issues track discrete units of work (bugs, features, tasks) with labels, assignees, and comments. Project boards (GitHub Projects) organize issues/PRs into columns like Backlog/In Progress/Done, giving a visual view of what's actually happening across a repo. Milestones group issues toward a shared deadline or release. None of this is Git itself — it's GitHub's layer on top, for the human coordination Git's commit graph doesn't capture.",
+        whyDevops:
+          "Even solo, a lightweight board separates \"what am I doing right now\" from \"what's the full curriculum\" — PLAN.md and CURRICULUM.md are the source of truth for scope, a board is for active work in flight.",
+        handsOn: [
+          { label: 'No CLI needed for this one', code: '# GitHub web UI: repo -> Projects -> New project -> Board template\n# Columns: Backlog / In Progress / Done' },
+        ],
+        troubleshooting: [
+          'Board becomes stale/ignored → usually a sign it\'s duplicating something already tracked elsewhere (like this curriculum); keep it to short-lived, active items only.',
+        ],
+        interview: [
+          'What\'s the difference between a GitHub Issue and a Git commit — why do you need both?',
+          'How would you decide what belongs on a project board vs in a planning doc?',
+        ],
+        azureConnection:
+          'Set up for this repo to track day-to-day work items across the 13-module roadmap, separate from PLAN.md/CURRICULUM.md which hold the fixed curriculum structure.',
+      },
+      {
+        id: 'github-actions-intro',
+        title: 'GitHub Actions introduction',
+        concept:
+          "A workflow is a YAML file under `.github/workflows/` triggered by events (`push`, `pull_request`, schedule, manual). It runs one or more jobs, each a sequence of steps on a fresh runner VM. Steps either run shell commands directly or invoke reusable 'actions' (like `actions/checkout` to pull the repo, or `gitleaks/gitleaks-action` for scanning). Full CI/CD (build, scan, deploy) is Module 7 — this chapter is just enough to read and reason about a workflow file.",
+        whyDevops:
+          "You'll be reading and editing workflow YAML constantly from here on — this repo's `ci.yml` already runs on every push and PR.",
+        handsOn: [
+          { label: 'Read the repo\'s actual workflow', code: 'cat .github/workflows/ci.yml' },
+        ],
+        troubleshooting: [
+          'A workflow doesn\'t trigger at all → check the `on:` triggers match what you did (e.g. it\'s scoped to `pull_request` but you pushed directly to a branch with no open PR).',
+        ],
+        interview: [
+          'What\'s the difference between a workflow, a job, and a step?',
+          'Why does each job run on a fresh runner instead of a persistent machine?',
+        ],
+        azureConnection:
+          'This repo\'s `ci.yml` currently has three jobs — `gitleaks`, `backend` (pytest), `frontend` (npm build) — all three ran and passed on the PR merged earlier this session.',
+      },
+      {
+        id: 'git-troubleshooting-lab',
+        title: 'Git troubleshooting lab',
+        concept:
+          "Deliberate practice recovering from common bad states: a merge gone wrong (abort or reset it), a detached HEAD (checkout a branch to reattach), a rejected non-fast-forward push (pull/rebase first), an accidentally committed secret (rotate the credential — history rewriting alone doesn't fully fix a pushed secret), and a branch that's diverged badly enough that starting a fresh branch from a known-good commit is faster than untangling it.",
+        whyDevops:
+          "Same principle as the Linux troubleshooting lab: the goal is fast, calm diagnosis under a half-broken repo, not memorized facts.",
+        handsOn: [
+          { label: 'Diagnostic toolkit', code: 'git status\ngit log --oneline --graph --all -10\ngit reflog -10' },
+        ],
+        troubleshooting: [
+          'No single fix — reproduce each scenario deliberately on a throwaway branch and practice recovering, the same way the undo-practice chapter\'s revert/reset/reflog sequence was done live in this project.',
+        ],
+        interview: [
+          'You accidentally pushed a real API key in a commit two pushes ago — what\'s your actual remediation sequence?',
+          'What does "detached HEAD" mean and how do you get back to a normal state?',
+        ],
+        azureConnection:
+          'Directly exercised in this project already: the revert -> reset --soft -> reflog sequence in the Undo Safely chapter was real troubleshooting practice, not a hypothetical.',
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
-  { number: 2, title: 'Git & GitHub', outcome: 'Use Git as the control system for infrastructure and application delivery.' },
   { number: 3, title: 'Networking Fundamentals', outcome: 'Understand the traffic path before learning Azure networking.' },
   { number: 4, title: 'Docker', outcome: 'Package, run, debug, and publish applications as containers.' },
   { number: 5, title: 'Azure Fundamentals', outcome: 'Navigate Azure and choose basic services deliberately.' },

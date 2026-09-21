@@ -42,6 +42,8 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** use Git as the control system for infrastructure and application delivery.
 
+**Status (2026-09-21):** Done — PR workflow used for real (`phase1-linux-vm` → `main`, 3 CI checks passed, merged), a real merge conflict resolved earlier in the session, undo practice done live (`git revert` on a shared-history commit, `git reset --soft` on local-only commits, `git reflog` recovery demonstrated), gitleaks wired in as both a pre-commit hook and a CI job (verified against a real fake secret and a known-placeholder one), GitHub Project board created. Full chapter content written in the frontend curriculum browser. See LEARNING_LOG.md "Module 2 — Git & GitHub" for details.
+
 ### Module 3 — Networking Fundamentals
 
 1. Network basics: IP, MAC, ports, protocols

@@ -1,96 +1,272 @@
-# 30-Day Azure DevOps Plan — AzureOps Copilot
+# Azure DevOps Zero-to-Production Curriculum
 
-Source of truth for what to do each day. Check items off as you go and log
-what you actually did (+ `az`/`kubectl`/`terraform` commands used) in
-[LEARNING_LOG.md](LEARNING_LOG.md) — those entries also become ingestion
-input for the app itself.
+This is the source of truth for the learning path. The goal is to go from DevOps fundamentals to production-oriented Azure DevOps skills through one evolving project: **AzureOps Copilot**.
 
-## Day 0 — Setup (do this before Day 1)
+## Learning philosophy
 
-- [ ] `az login`, confirm subscription: `az account show`
-- [ ] Budget alert at 50/75/90% of your trial credit, alerts to your email:
-      `az consumption budget create ...`
-- [ ] Tag convention decided: `project=azureops-copilot` on every resource group
-- [ ] Gemini API key obtained, stored nowhere but `backend/.env` (gitignored) for now — moves to Key Vault in Week 3
-- [ ] GitHub repo created, this plan pushed, a GitHub Project board with columns `Week 1..4` + `Backlog`
-- [ ] Domain's GoDaddy DNS panel open and ready to edit
+- Learn the underlying concept before the Azure service.
+- Every chapter includes: concept, why DevOps needs it, hands-on commands, troubleshooting, interview questions, and Azure connection.
+- Build one system progressively instead of collecting disconnected tutorials.
+- Keep a daily learning log with commands, mistakes, fixes, and architecture decisions.
+- Prefer Azure-native services while keeping core DevOps concepts cloud-agnostic.
 
-## Week 1 — Build the app, first deployment, Linux/networking fundamentals
+## 13-Module Roadmap
 
-**Days 1–3 — Build locally, no Azure yet**
-- [ ] Scaffold repo (this repo), FastAPI skeleton, React chat skeleton
-- [ ] `docker compose up` — backend + frontend + Qdrant (single node) all running locally
-- [ ] Ingestion pipeline: chunk text → Gemini embeddings (`text-embedding-004`) → Qdrant upsert
-- [ ] Chat endpoint: retrieve top-k from Qdrant → Gemini generate (`gemini-2.0-flash`) → stream to frontend via WebSocket
-- [ ] Ingest ~10 Azure docs pages, ask a question, get a grounded answer end-to-end
-- [ ] Add Redis in front of the chat endpoint, cache repeated queries
-- [ ] Add a queue (Redis-backed or Azure Service Bus later) so `/ingest` doesn't block the HTTP request
-- [ ] `pytest` for `/ingest` and `/chat`; pre-commit hook for secret scanning (gitleaks)
+### Module 1 — Linux & Bash
+1. Linux and the DevOps operating model
+2. Filesystem navigation and file operations
+3. Users, groups, permissions, sudo, ownership
+4. Processes, jobs, signals, and resource inspection
+5. Services with systemd and logs with journalctl
+6. Packages, environment variables, shell configuration
+7. Bash scripting fundamentals
+8. SSH, remote administration, cron, and basic hardening
+9. Linux troubleshooting lab
 
-**Days 4–7 — First Azure deployment**
-- [ ] Linux fundamentals on the VM before anything else: `systemctl`, `journalctl -u docker`, file permissions/`chown`, cron, `ps`/`top`/`kill`, package management (`apt`)
-- [ ] Networking review: OSI/TCP-IP model, `ping`/`traceroute`/`netstat`, then apply it — VNet + subnet + NSG built from scratch (not defaults)
-- [ ] Ansible playbook to configure the VM (Docker install, user/firewall setup) — replaces a raw bash bootstrap script
-- [ ] One `Standard_B2s` VM, deploy the app via `docker compose --profile app`
-- [ ] Azure Container Registry (ACR): build images, push to ACR, pull on the VM instead of building in place
-- [ ] Trivy scan step on the ACR images — fail on critical CVEs
-- [ ] GoDaddy A record → VM public IP
-- [ ] TLS via certbot/Let's Encrypt
-- [ ] Azure Bastion for VM access — no open port 22
+**Outcome:** operate and troubleshoot a Linux server confidently.
 
-**Checkpoint:** `https://yourdomain.com` serves AzureOps Copilot from one VM. You can explain VNets/NSGs/RBAC and Linux service management.
+### Module 2 — Git & GitHub
+1. Version control mental model
+2. Repositories, commits, branches
+3. Staging, history, diff, restore, reset, revert
+4. Branching strategies and pull requests
+5. Merge conflicts and rebasing
+6. Tags, releases, .gitignore, Git hygiene
+7. GitHub Issues/Projects and collaboration
+8. GitHub Actions introduction
+9. Git troubleshooting lab
 
-## Week 2 — Scale out, load balance
+**Outcome:** use Git as the control system for infrastructure and application delivery.
 
-- [ ] Availability Zones vs Availability Sets — know the difference cold
-- [ ] Convert the VM into a VM Scale Set (2 instances, zone-redundant), pulling images from ACR
-- [ ] Standard Load Balancer + health probe on `/health`
-- [ ] Kill one instance manually, confirm the LB reroutes traffic
-- [ ] Autoscale rule on CPU; load-test with `hey`/`ab` to trigger it
-- [ ] DNS → LB public IP
+### Module 3 — Networking Fundamentals
+1. Network basics: IP, MAC, ports, protocols
+2. OSI and TCP/IP models
+3. IPv4, CIDR, subnetting
+4. DNS and name resolution
+5. HTTP/HTTPS and TLS
+6. Routing, NAT, gateways
+7. Firewalls and security groups
+8. Load balancing and reverse proxies
+9. Network troubleshooting with ping, traceroute, curl, ss/netstat, nslookup/dig
+10. Networking lab
 
-**Checkpoint:** you can explain LB health probes, autoscaling triggers, why zone-redundancy matters — and you watched it survive an instance kill.
+**Outcome:** understand the traffic path before learning Azure networking.
 
-## Week 3 — Edge, security, secrets
+### Module 4 — Docker
+1. Why containers exist
+2. Images, layers, containers
+3. Dockerfile
+4. Volumes and networking
+5. Environment variables and secrets
+6. Docker Compose
+7. Container debugging and logs
+8. Registries and image lifecycle
+9. Image security and vulnerability scanning
+10. Containerize AzureOps Copilot
 
-- [ ] Azure Front Door (Standard) in front of the LB — managed TLS on your domain, caching rules
-- [ ] Application Gateway + WAF for one day only: test a payload against it, then **delete it** (don't let a $0.36/hr resource idle)
-- [ ] Key Vault + Managed Identity — move Gemini key, Qdrant creds, `backend/.env` secrets out of plaintext
-- [ ] Bandit (Python SAST) in CI; one manual OWASP ZAP baseline scan against the deployed app
-- [ ] Optional half-day: run HashiCorp Vault in a container, migrate one secret to it, compare the workflow to Key Vault
-- [ ] Application Insights wired into the FastAPI backend — trace retrieval time vs Gemini latency on the `/chat` path
-- [ ] Microsoft Defender for Cloud (free tier) — fix at least one posture recommendation
+**Outcome:** package, run, debug, and publish applications as containers.
 
-**Checkpoint:** you can explain Front Door vs Application Gateway vs Load Balancer, and no secret exists outside Key Vault.
+### Module 5 — Azure Fundamentals
+1. Azure global infrastructure: regions, zones, geography
+2. Tenants, subscriptions, resource groups
+3. Azure Resource Manager and tags
+4. Azure CLI and Cloud Shell
+5. Entra ID, authentication, RBAC
+6. Compute choices: VM, App Service, Container Apps, Functions
+7. Storage: Blob, Files, managed disks
+8. Databases and managed services overview
+9. Monitoring, cost management, budgets
+10. Build the first Azure environment
 
-## Week 4 — Clustering, IaC, CI/CD, governance, capstone
+**Outcome:** navigate Azure and choose basic services deliberately.
 
-- [ ] **Qdrant 3-node cluster** across zones, serving the app's real retrieval traffic — this is the "3-node clustering" lesson, tied directly to the app instead of an arbitrary unrelated database
-- [ ] Kill the leader node, confirm the cluster re-elects and the app keeps answering
-- [ ] Prometheus + Grafana scraping the VMSS/Qdrant nodes — a second, cloud-agnostic monitoring stack alongside Azure Monitor/App Insights
-- [ ] Terraform (or Bicep) capturing everything from Weeks 1–3
-- [ ] GitHub Actions CI/CD: build → push to ACR → redeploy VMSS, authenticated via **OIDC federation** (no stored service-principal secret)
-- [ ] Azure Policy: enforce a tagging rule + a VM-SKU restriction on the resource group
-- [ ] Backup: snapshot Qdrant volumes + scheduled export to Blob; restore once to prove it works
-- [ ] **Capstone:** delete everything, redeploy the entire stack from IaC alone, time it
+### Module 6 — Azure Networking
+1. VNet, subnet, NIC
+2. NSG and traffic filtering
+3. Public vs private IPs
+4. Route tables and UDRs
+5. Azure Load Balancer
+6. Private endpoints and Private Link
+7. Application Gateway and WAF concepts
+8. Azure DNS
+9. Azure Front Door concepts
+10. Design and troubleshoot the AzureOps network
 
-**Checkpoint:** you can stand up the whole architecture from code alone, explain every component, and have monitoring/alerts/backups proving it's production-credible.
+**Outcome:** understand how Azure traffic flows from the internet to the application.
 
-## Bonus track (only if days/budget remain)
+### Module 7 — CI/CD with GitHub Actions
+1. CI vs CD and deployment lifecycle
+2. GitHub Actions workflow syntax
+3. Runners, jobs, steps, actions
+4. Artifacts, caching, matrices
+5. Secrets and environments
+6. Build and test Python/FastAPI
+7. Build and scan Docker images
+8. Push to Azure Container Registry
+9. Deploy to Azure
+10. OIDC federation and passwordless Azure authentication
+11. Rollback, approvals, and deployment strategies
 
-- [ ] Container Apps or a minimal AKS cluster as an alternative to VMSS
-- [ ] Deploy the app via a **Helm chart** if you go the AKS route (not raw manifests)
-- [ ] Azure Chaos Studio: a scripted experiment that kills a VMSS instance or a Qdrant node automatically
-- [ ] End-of-month cost pass: right-size based on real usage, price out 1-yr reserved instances
+**Outcome:** create a repeatable build-test-scan-deploy pipeline.
 
-## Explicitly out of scope this month (know they exist, don't deploy them)
+### Module 8 — Infrastructure as Code with Terraform
+1. Why IaC
+2. Terraform workflow and state
+3. Providers, resources, variables, outputs
+4. Modules and reusable patterns
+5. Remote state and locking
+6. Secrets and sensitive values
+7. Terraform plan/apply/destroy
+8. Azure networking and compute as code
+9. Drift and import
+10. CI validation for Terraform
+11. Rebuild AzureOps from IaC alone
 
-- Jenkins — GitHub Actions covers the same CI/CD concepts; read one Jenkinsfile example for interview familiarity
-- ELK Stack — Prometheus/Grafana covers monitoring; know ELK is the logging-focused alternative
-- AWS/GCP — deliberately Azure-deep this month; breadth comes later
-- Database internals/sharding/consensus theory, distributed queue theory beyond "why a queue exists" — software-architecture depth, not a DevOps-role requirement yet
+**Outcome:** provision and change Azure infrastructure safely through code.
 
-## Cost discipline reminders
+### Module 9 — Kubernetes Fundamentals
+1. Why orchestration
+2. Kubernetes architecture
+3. Pods and containers
+4. Deployments and ReplicaSets
+5. Services and service discovery
+6. ConfigMaps and Secrets
+7. Namespaces and RBAC
+8. Health probes and resource requests/limits
+9. Ingress
+10. Rolling updates and rollback
+11. Kubernetes troubleshooting
 
-- Front Door, Application Gateway, and any bonus AKS cluster are the only line items expensive enough to matter on a 1-month trial — build, test, log the learning, tear down same day unless noted otherwise as a keeper.
-- Everything else (VM/VMSS, LB, Qdrant×3, Key Vault, Blob, Log Analytics) can run the full month within a typical $200 Azure trial credit if the above is respected.
+**Outcome:** understand the core Kubernetes control model before using AKS.
+
+### Module 10 — Azure Kubernetes Service (AKS)
+1. AKS architecture and responsibilities
+2. Nodes, node pools, networking
+3. Identity and workload identity
+4. Container Registry integration
+5. Deploy AzureOps Copilot to AKS
+6. Ingress and TLS
+7. Autoscaling
+8. Observability
+9. Upgrade and maintenance concepts
+10. AKS cost and security fundamentals
+
+**Outcome:** deploy and operate a realistic workload on managed Kubernetes.
+
+### Module 11 — Monitoring & Observability
+1. Metrics vs logs vs traces
+2. SLIs, SLOs, error budgets
+3. Azure Monitor and Log Analytics
+4. Application Insights
+5. Alerts and action groups
+6. Structured application logging
+7. Prometheus and Grafana concepts
+8. Tracing the /chat path
+9. Incident troubleshooting lab
+10. Dashboard and alert design
+
+**Outcome:** detect, investigate, and explain production behavior.
+
+### Module 12 — Azure Security & Governance
+1. Shared responsibility
+2. Entra ID and RBAC
+3. Managed identities
+4. Key Vault
+5. Network security
+6. Secret rotation and secure configuration
+7. WAF and common web threats
+8. Defender for Cloud concepts
+9. Azure Policy and tagging governance
+10. Security scanning in CI
+11. Least privilege and threat-aware architecture
+
+**Outcome:** secure the application and its delivery pipeline without hard-coded secrets.
+
+### Module 13 — Azure Front Door & Production Edge
+1. Reverse proxy and edge delivery
+2. Front Door architecture
+3. Endpoints, routes, domains, origins, origin groups
+4. Health probes and failover
+5. TLS/custom domains
+6. Caching and rule sets
+7. WAF at the edge
+8. Front Door vs Application Gateway vs Load Balancer vs Traffic Manager
+9. Multi-region architecture
+10. Failure testing and recovery
+11. Production design review
+
+**Outcome:** understand when and how Front Door fits into a global Azure application.
+
+## Capstone — AzureOps Copilot
+
+Build the system progressively:
+
+```
+Internet
+   |
+Azure Front Door + WAF
+   |
+Azure Load Balancer / Ingress
+   |
+Compute: VMSS or AKS
+   |
+Azure Container Registry
+   |
+FastAPI + React
+   |
+Redis ---- Qdrant
+   |
+Azure services for secrets, monitoring, and storage
+```
+
+Delivery path:
+
+```
+Developer
+  -> GitHub
+  -> GitHub Actions
+  -> test
+  -> security scan
+  -> container build
+  -> ACR
+  -> Azure deployment
+  -> monitoring
+```
+
+Final capstone requirements:
+- Multi-environment configuration
+- IaC-only rebuild
+- CI/CD with OIDC
+- No application secrets in Git
+- Health probes and failover test
+- Monitoring, logs, traces, and alerts
+- Backup and restore test
+- Documented architecture and runbook
+- Cost review and teardown procedure
+
+## Recommended order of daily study
+
+For each chapter:
+1. Read the concept
+2. Run the commands yourself
+3. Break something intentionally
+4. Diagnose and fix it
+5. Add what you learned to LEARNING_LOG.md
+6. Answer the interview questions without notes
+7. Connect the concept to Azure
+8. Commit the work to GitHub
+
+## Milestones
+
+- Milestone 1: Linux + Git + networking fundamentals
+- Milestone 2: Dockerized application running locally
+- Milestone 3: First Azure deployment
+- Milestone 4: CI/CD pipeline
+- Milestone 5: Infrastructure as Code
+- Milestone 6: Kubernetes/AKS
+- Milestone 7: Observability + security
+- Milestone 8: Front Door + multi-region capstone
+
+## Out of scope initially
+
+Jenkins, AWS/GCP breadth, deep database internals, advanced distributed-systems theory, and large-scale platform engineering are deferred until the core Azure DevOps path is complete.

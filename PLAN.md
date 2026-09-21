@@ -112,7 +112,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Status (2026-09-21):** Done — all 10 chapters, real infrastructure throughout, no resource built without a reason:
 - **Ch 1-4**: `azureops-vnet` (10.10.0.0/16, app-subnet + gateway-subnet), NSG, connectivity, and routing built from scratch.
-- **Ch 5**: `azureops-lb` (Standard LB) load-balancing `app-vm1`/`app-vm2`, real failover verified. Managed-vs-software LB comparison written into the chapter; final call deferred to Module 9 (alongside the Qdrant cluster decision).
+- **Ch 5**: `azureops-lb` (Standard LB) load-balancing `app-vm1`/`app-vm2`, real failover verified. Managed-vs-software LB comparison written into the chapter; final call deferred to Module 8 — Kubernetes Fundamentals (alongside the Qdrant cluster decision).
 - **Ch 6**: Private Link on the Module 5 storage account, public access disabled, verified from both inside and outside the VNet.
 - **Ch 7**: cost-conscious redirect — software WAF (`owasp/modsecurity-crs` on the existing VMs) instead of Azure Application Gateway, zero extra cost, verified blocking a real SQLi payload end-to-end through the LB.
 - **Ch 8**: real public DNS zone (`azureops-lab.test`, an IANA test TLD) with A/CNAME/TXT records, verified via direct nameserver query — `devopspk.online` deliberately untouched.
@@ -137,23 +137,7 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** create a repeatable build-test-scan-deploy pipeline.
 
-### Module 8 — Infrastructure as Code with Terraform
-
-1. Why IaC
-2. Terraform workflow and state
-3. Providers, resources, variables, outputs
-4. Modules and reusable patterns
-5. Remote state and locking
-6. Secrets and sensitive values
-7. Terraform plan/apply/destroy
-8. Azure networking and compute as code
-9. Drift and import
-10. CI validation for Terraform
-11. Rebuild AzureOps from IaC alone
-
-**Outcome:** provision and change Azure infrastructure safely through code.
-
-### Module 9 — Kubernetes Fundamentals
+### Module 8 — Kubernetes Fundamentals
 
 1. Why orchestration
 2. Kubernetes architecture
@@ -169,7 +153,7 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** understand the core Kubernetes control model before using AKS.
 
-### Module 10 — Azure Kubernetes Service (AKS)
+### Module 9 — Azure Kubernetes Service (AKS)
 
 1. AKS architecture and responsibilities
 2. Nodes, node pools, networking
@@ -184,7 +168,7 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** deploy and operate a realistic workload on managed Kubernetes.
 
-### Module 11 — Monitoring & Observability
+### Module 10 — Monitoring & Observability
 
 1. Metrics vs logs vs traces
 2. SLIs, SLOs, error budgets
@@ -199,7 +183,7 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** detect, investigate, and explain production behavior.
 
-### Module 12 — Azure Security & Governance
+### Module 11 — Azure Security & Governance
 
 1. Shared responsibility
 2. Entra ID and RBAC
@@ -215,7 +199,7 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** secure the application and its delivery pipeline without hard-coded secrets.
 
-### Module 13 — Azure Front Door & Production Edge
+### Module 12 — Azure Front Door & Production Edge
 
 1. Reverse proxy and edge delivery
 2. Front Door architecture
@@ -230,6 +214,22 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 11. Production design review
 
 **Outcome:** understand when and how Front Door fits into a global Azure application.
+
+### Module 13 — Infrastructure as Code with Terraform
+
+1. Why IaC
+2. Terraform workflow and state
+3. Providers, resources, variables, outputs
+4. Modules and reusable patterns
+5. Remote state and locking
+6. Secrets and sensitive values
+7. Terraform plan/apply/destroy
+8. Azure networking and compute as code
+9. Drift and import
+10. CI validation for Terraform
+11. Rebuild AzureOps from IaC alone
+
+**Outcome:** capture everything built manually across Modules 1-12 as code, and prove it by rebuilding from Terraform alone. Moved to the end of the roadmap (2026-09-21) — consolidating IaC once, after all the manual infrastructure work is done, rather than learning Terraform mid-sequence before most of what it would capture even exists yet.
 
 ## Capstone — AzureOps Copilot
 
@@ -307,11 +307,13 @@ For each chapter:
 
 2026-09-21: explicit end goal — publish the AzureOps Copilot frontend on
 `devopspk.online` through Azure Front Door, as hands-on practice for
-Module 13. Deliberately deferred until Phase 1 (Linux fundamentals) is
-finished, per the foundations-first philosophy above — tracked here so it
-isn't lost. When picked up, it belongs after Module 6 (Azure Networking,
-custom VNet/NSG/LB) and pairs with Module 13's chapters (Front Door
-architecture, custom domains/TLS, WAF at the edge).
+Module 12 (Front Door & Production Edge — renumbered 2026-09-21 when
+Terraform moved to the end of the roadmap as Module 13). Deliberately
+deferred until Phase 1 (Linux fundamentals) is finished, per the
+foundations-first philosophy above — tracked here so it isn't lost. When
+picked up, it belongs after Module 6 (Azure Networking, custom VNet/NSG/LB)
+and pairs with Module 12's chapters (Front Door architecture, custom
+domains/TLS, WAF at the edge).
 
 ## Deferred decision — app-tier Load Balancer: managed vs. software
 
@@ -319,7 +321,9 @@ architecture, custom domains/TLS, WAF at the edge).
 is being kept running for now for direct comparison against the
 cost-conscious choices made elsewhere in this module (Chapter 7's software
 WAF). Explicit decision: **defer the final managed-vs-software call for the
-app tier until Module 9**, when the Qdrant 3-node cluster is built — at
+app tier until Module 8** (Kubernetes Fundamentals — renumbered 2026-09-21
+when Terraform moved to the end of the roadmap), when the Qdrant 3-node
+cluster is built — at
 that point, design one consistent software-LB approach (e.g. HAProxy) that
 can inform (or directly cover) both the app tier (`app-vm1`/`app-vm2`,
 currently behind `azureops-lb`) and whatever fronts the Qdrant cluster,

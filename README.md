@@ -14,7 +14,7 @@ See:
 
 ## Roadmap
 
-Linux & Bash -> Git & GitHub -> Networking -> Docker -> Azure Fundamentals -> Azure Networking -> CI/CD -> Terraform -> Kubernetes -> AKS -> Observability -> Security -> Azure Front Door -> Capstone
+Linux & Bash -> Git & GitHub -> Networking -> Docker -> Azure Fundamentals -> Azure Networking -> CI/CD -> Kubernetes -> AKS -> Observability -> Security -> Azure Front Door -> Terraform -> Capstone
 
 ## Repository layout
 

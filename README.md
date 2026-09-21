@@ -1,46 +1,60 @@
-# DevOps Tutorial — AzureOps Copilot
+# DevOps Tutorial — Azure DevOps from Zero
 
-A 30-day, hands-on Azure DevOps learning project. The deliverable isn't just
-notes — it's **AzureOps Copilot**, a small RAG chatbot (Gemini-powered) that
-answers questions about Azure/DevOps by retrieving from a knowledge base you
-build as you go (official docs + your own [LEARNING_LOG.md](LEARNING_LOG.md) +
-your own infra code). Every Azure service in the curriculum is aimed at
-deploying and hardening this one real app, not a throwaway demo.
+This repository is a structured, hands-on learning path for becoming an Azure-focused DevOps engineer from zero.
 
-See [PLAN.md](PLAN.md) for the full day-by-day curriculum and
-[ARCHITECTURE.md](ARCHITECTURE.md) for how the app itself is built.
+The learning path uses **AzureOps Copilot**, a small RAG chatbot, as the evolving capstone. Every major DevOps concept is learned on the way to deploying, securing, automating, monitoring, and operating this one application.
+
+## Curriculum
+
+See:
+- [PLAN.md](PLAN.md) — source-of-truth roadmap and milestones
+- [CURRICULUM.md](CURRICULUM.md) — chapter-by-chapter learning content
+- [ARCHITECTURE.md](ARCHITECTURE.md) — application architecture
+- [LEARNING_LOG.md](LEARNING_LOG.md) — daily hands-on record
+
+## Roadmap
+
+Linux & Bash -> Git & GitHub -> Networking -> Docker -> Azure Fundamentals -> Azure Networking -> CI/CD -> Terraform -> Kubernetes -> AKS -> Observability -> Security -> Azure Front Door -> Capstone
 
 ## Repository layout
 
 ```
-backend/               FastAPI: /ingest (chunk+embed docs into Qdrant), /chat (RAG + Gemini)
-frontend/               React + Vite + TS chat UI
-vector-store/           Qdrant config (single node locally, 3-node cluster in Week 4)
-infra/                  Terraform/Bicep — built up incrementally, Week 1 through Week 4
-scripts/                deploy.sh, ingest.sh, backup.sh
-docs/                   architecture notes, Azure resource inventory, keyvault map
-.github/workflows/      CI/CD — added in Week 4
-LEARNING_LOG.md          daily log — also an ingestion source for the app itself
-PLAN.md                  the full curriculum (this is the source of truth for what to do each day)
+backend/
+frontend/
+vector-store/
+infra/
+scripts/
+docs/
+.github/workflows/
+LEARNING_LOG.md
+PLAN.md
+CURRICULUM.md
+ARCHITECTURE.md
 ```
 
-## Prerequisites
+## Learning method
 
-- Azure CLI, logged in (`az login`), active subscription with budget alerts configured (see PLAN.md Day 0)
-- A Gemini API key (for chat + embeddings)
-- Docker + Docker Compose
-- A domain you control (GoDaddy) for DNS/TLS practice
-- Node 20+, Python 3.11+
+For every chapter:
+1. Understand the concept.
+2. Run the commands.
+3. Break something intentionally.
+4. Troubleshoot it.
+5. Log the lesson.
+6. Answer interview questions.
+7. Connect it to Azure.
+8. Commit the work.
 
-## Run locally
+## Current capstone direction
 
-```bash
-cp backend/.env.example backend/.env      # fill in GEMINI_API_KEY
-docker compose up -d --build
+```
+Developer
+  -> GitHub
+  -> GitHub Actions
+  -> test / scan / build
+  -> Azure Container Registry
+  -> Azure compute
+  -> Azure Front Door / WAF
+  -> monitoring / logs / traces
 ```
 
-Frontend: http://localhost:5173 · Backend health: http://localhost:8000/health
-
-## Status
-
-Tracking progress against [PLAN.md](PLAN.md) day by day in [LEARNING_LOG.md](LEARNING_LOG.md).
+The curriculum intentionally starts with fundamentals before Azure Front Door, because understanding Linux, Git, HTTP, DNS, networking, reverse proxies, load balancing, and security makes the Azure services much easier to understand and troubleshoot.

@@ -536,3 +536,40 @@ curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
 - Reusing existing VMs for an additional workload (WAF proxy alongside the app itself) is a legitimate, common pattern for cost-constrained environments, with the honest tradeoff being config duplication across nodes and no dedicated WAF tier to scale independently of the app tier.
 
 **Cost check:** Zero new Azure resources this chapter — Docker containers on already-running, already-paid-for VMs. The user explicitly chose to keep the Chapter 5 Load Balancer running (rather than deleting it) for direct comparison against this software approach, so that small ongoing cost (~$0.025/hr) continues by deliberate choice, not oversight.
+
+---
+
+## Also this session: cost-management follow-up + deferred LB decision tracked
+
+**What happened:** User asked how much `azureops-lb` actually costs. Gave a published-pricing estimate (~$0.03/hr combined LB + public IP, ~$21-22/mo if run continuously), then queried real Cost Management data to get an actual number — found billing data has an 8-24hr reporting lag, so today's new resources (LB, app VMs) hadn't posted costs yet; only `azureops-vm01`'s older disk/IP showed real figures. Explained this lag honestly rather than reporting a misleading "$0 so far."
+- User then asked whether the app-tier Load Balancer could be switched to software later, specifically timed with the Module 9 Qdrant 3-node cluster work. Clarified these are related but distinct problems (app-tier HTTP load balancing vs. Qdrant's own Raft-based internal clustering) and proposed deferring the final managed-vs-software call for the app tier until Module 9, to design one consistent software-LB approach for both at once rather than twice separately. Tracked this explicitly in PLAN.md as a deferred decision, same pattern as the devopspk.online/Front Door deferred goal.
+
+---
+
+## Module 6 — Azure Networking, Chapter 8 (Azure DNS) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 8 — Azure DNS, public zones and records, built and verified for real without touching the actual `devopspk.online` domain.
+
+**What I did:**
+- Created a real public Azure DNS zone (`azureops-lab.test`) — deliberately using `.test`, an IANA-reserved TLD meant specifically for testing/documentation, guaranteed never to be a real registrable domain, so there's zero chance of confusion with real infrastructure or accidental interference with `devopspk.online`.
+- Added an A record (`app` -> `azureops-lb`'s real public IP), a CNAME record (`www` -> `app.azureops-lab.test`), and a TXT record (`@`, a verification-style string) — real record management, not just zone creation.
+- Verified the zone actually works by querying one of Azure's assigned nameservers *directly* (`nslookup app.azureops-lab.test ns1-08.azure-dns.com`) rather than through normal DNS resolution — this correctly resolved to the real LB IP, proving the zone functions completely independent of registrar delegation, which was the whole point: creating a zone and adding records has zero effect on any live domain until NS records are actually changed at the registrar.
+- Confirmed all 5 record sets exist with correct types (`NS`/`SOA` auto-created by Azure, plus the `TXT`/`A`/`CNAME` added manually) via `az network dns record-set list`.
+
+**Commands used:**
+```bash
+az network dns zone create --name azureops-lab.test --resource-group azureops-copilot-rg
+az network dns record-set a add-record --zone-name azureops-lab.test --record-set-name app --ipv4-address 135.235.240.52
+az network dns record-set cname set-record --zone-name azureops-lab.test --record-set-name www --cname app.azureops-lab.test
+az network dns record-set txt add-record --zone-name azureops-lab.test --record-set-name @ --value "azureops-copilot-verification"
+
+nslookup app.azureops-lab.test ns1-08.azure-dns.com   # -> 135.235.240.52, direct nameserver query
+
+az network dns record-set list -g azureops-copilot-rg -z azureops-lab.test --query "[].{name:name, kind:type}" -o json
+```
+
+**What broke / what I learned:**
+- Nothing broke this chapter — a clean build, likely because the zone/record creation flow doesn't touch VMs, NSGs, or any of the areas that produced bugs in earlier chapters (no Git-Bash path arguments, no container privilege issues, no cross-resource NSG interactions).
+- Azure Cost Management's real billing data lags actual resource usage by roughly 8-24 hours — worth remembering before ever reporting a cost number as "confirmed" without checking whether the underlying resource is old enough for its usage to have posted yet.
+
+**Cost check:** One new public DNS zone (~$0.50/month base + per-query charges, negligible at this volume) — small, ongoing, deliberately accepted rather than overlooked.

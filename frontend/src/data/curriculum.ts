@@ -1210,6 +1210,29 @@ export const modules: Module[] = [
         azureConnection:
           "This project deliberately built the self-hosted path instead of Azure Application Gateway, as a direct cost-conscious decision made mid-session: `app-vm1`/`app-vm2` each run an `owasp/modsecurity-crs:nginx` container proxying to the local app, with `azureops-lb`'s health probe and load-balancing rule re-pointed to port 8080 so every request now passes through WAF inspection. Verified end-to-end through the full real path (internet -> Load Balancer -> WAF -> app): a normal request returned `Hello from app-vm1`, and a SQL-injection-style payload (`?id=1' OR '1'='1`) was blocked with HTTP 403 before ever reaching the Python app — the same protection Application Gateway's WAF SKU would provide, at zero additional Azure cost.",
       },
+      {
+        id: 'azure-dns',
+        title: 'Azure DNS',
+        concept:
+          "Azure DNS hosts DNS zones — public (resolvable by anyone on the internet, once delegated) or private (Chapters 3/6, resolvable only inside linked VNets). A public zone by itself does nothing until the domain's registrar NS records point at Azure's assigned nameservers ('delegation') — creating the zone and adding records is completely safe and has zero effect on a live domain until that delegation step happens, since nothing on the internet will query Azure for that domain's records until the registrar says to. Once delegated, Azure's 4 assigned nameservers (spread across different top-level domains — .com/.net/.org/.info — for resilience against any single TLD having an outage) answer queries for every record in the zone.",
+        whyDevops:
+          "Understanding that zone creation and delegation are two separate, independently-safe steps is what makes it possible to build and test real DNS infrastructure without any risk to a live production domain — exactly the approach used here to avoid touching `devopspk.online` before Module 13's Front Door work is actually ready for it.",
+        handsOn: [
+          { label: 'A real public zone, with real records, on a throwaway test domain (not devopspk.online)', code: 'az network dns zone create --name azureops-lab.test --resource-group azureops-copilot-rg\naz network dns record-set a add-record --zone-name azureops-lab.test --record-set-name app --ipv4-address <lb-ip>\naz network dns record-set cname set-record --zone-name azureops-lab.test --record-set-name www --cname app.azureops-lab.test\naz network dns record-set txt add-record --zone-name azureops-lab.test --record-set-name @ --value "verification-string"' },
+          { label: 'Proving it resolves, WITHOUT registrar delegation', code: 'nslookup app.azureops-lab.test ns1-08.azure-dns.com\n# queries Azure\'s nameserver directly, bypassing normal DNS resolution entirely -- proves the zone works before any registrar change' },
+        ],
+        troubleshooting: [
+          'A newly created zone/record "doesn\'t resolve" when queried normally (e.g. via `nslookup <name>` with no nameserver specified) → this is expected before delegation; querying Azure\'s assigned nameservers directly (`nslookup <name> <azure-nameserver>`) proves the zone itself works, independent of whether the registrar has been updated yet.',
+          'Using `.test` as this chapter\'s zone name is deliberate, not arbitrary → it\'s an IANA-reserved TLD specifically meant for testing and documentation, guaranteed to never be a real, registrable domain — eliminates any chance of confusion with real infrastructure.',
+        ],
+        interview: [
+          'Why is creating a public DNS zone and adding records to it completely safe for a live domain, before any registrar change?',
+          'Why does Azure DNS assign nameservers across 4 different top-level domains instead of 4 azure-dns.com servers?',
+          'How would you prove a DNS zone\'s records are correct before touching a production domain\'s delegation?',
+        ],
+        azureConnection:
+          "A real public zone (`azureops-lab.test`) was built with A/CNAME/TXT records and verified by querying Azure's own nameserver directly — `app.azureops-lab.test` resolved to `azureops-lb`'s real public IP. This is deliberately decoupled from `devopspk.online`, which stays untouched until Module 13's Front Door work is ready to actually delegate it — the same zone-creation pattern would apply then, just with the real domain and Front Door's endpoint as the target instead of a throwaway test zone and the Load Balancer's IP.",
+      },
     ],
   },
 ]

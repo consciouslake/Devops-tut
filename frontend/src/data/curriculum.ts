@@ -1184,6 +1184,32 @@ export const modules: Module[] = [
         azureConnection:
           'Built directly on Module 5\'s real storage account (`azureopscopilotstore`): a private endpoint (`azureopscopilotstore-blob-pe`, IP `10.10.2.4` in `gateway-subnet`) now makes `azureopscopilotstore.blob.core.windows.net` resolve privately from inside `azureops-vnet` — confirmed via `az vm run-command` from `app-vm1`. Public network access was then disabled on the account entirely; a request from inside the VNet still reached the service (HTTP 409, real rejection reason, not a network failure) while a request from the laptop over the public internet got HTTP 403 — both prove the request reached Azure\'s service layer, contradicting the naive assumption that "disabled" means invisible from outside.',
       },
+      {
+        id: 'application-gateway-waf',
+        title: 'Application Gateway and WAF concepts',
+        concept:
+          "Application Gateway is Azure's managed Layer 7 reverse proxy: unlike the Load Balancer (Chapter 5, L4 — IP/port only), it terminates HTTP(S) and can route by URL path/hostname, and its WAF SKU inspects request content against the OWASP Core Rule Set (SQLi, XSS, path traversal, etc.) before traffic reaches a backend. The same capability exists as self-hosted software: nginx (or Apache) plus the ModSecurity engine, running the identical OWASP Core Rule Set. The functional difference is who runs and pays for the reverse proxy layer, not what it protects against — a managed WAF costs real money continuously (~$0.25-0.45/hr) in exchange for zero maintenance burden and Azure-native integration (autoscaling, diagnostics, Front Door integration); a software WAF costs nothing extra beyond compute you already own, in exchange for you owning its patching, scaling, and HA design.",
+        whyDevops:
+          "This is a real, recurring build-vs-buy decision in DevOps work, not just an Azure trivia point — knowing both the managed and self-hosted paths, and being able to reason about the cost/ownership tradeoff for a given team's constraints, is more valuable than only knowing how to click through one option.",
+        handsOn: [
+          {
+            label: 'Built this session: software WAF (nginx + ModSecurity + OWASP CRS) on existing VMs instead of Application Gateway',
+            code: "sudo docker run -d --name waf-proxy --network host --restart unless-stopped \\\n  -e BACKEND=http://localhost:8000 -e PARANOIA=1 -e PORT=8080 \\\n  owasp/modsecurity-crs:nginx\n# repeated on app-vm1 AND app-vm2 -- zero extra Azure cost, reuses existing VM compute\n# then re-pointed azureops-lb's probe + rule from port 8000 -> 8080 so ALL\n# traffic passes through the WAF layer, not just some of it",
+          },
+        ],
+        troubleshooting: [
+          "The WAF container crash-loops immediately after `docker run` → the `owasp/modsecurity-crs` nginx image deliberately runs as an unprivileged user and cannot bind ports below 1024; use the default `PORT=8080` (or another port >1024) rather than `PORT=80`, and point your load balancer's backend port there instead — hit exactly this in this session.",
+          "A backend port gets changed (e.g., 8000 -> 8080 to route through a new WAF layer) but the OLD port's NSG rules are left in place → not a live vulnerability by itself if the VM has no public IP, but it's a dangling rule that misrepresents the actual traffic path and should be cleaned up — exactly the state this project is in right now (`Allow-Internet-8000`/`Allow-LB-Probe-8000` are vestigial after moving to 8080).",
+          "Only SOME paths to a backend go through the WAF (e.g., a leftover LB rule or open NSG port bypassing it) → the WAF only protects what it's actually placed in front of; an attacker will simply target whatever path skips it. This is exactly why the LB's rule/probe were repointed from 8000 to 8080 instead of adding 8080 as a second, parallel path.",
+        ],
+        interview: [
+          'What specific capability does Application Gateway/WAF add on top of what the Load Balancer from Chapter 5 already does?',
+          'Walk through the cost/ownership tradeoff between Azure Application Gateway+WAF and a self-hosted nginx+ModSecurity setup on existing VMs.',
+          'If a WAF is in place but an attacker\'s request still reaches the backend unfiltered, what\'s the most likely explanation?',
+        ],
+        azureConnection:
+          "This project deliberately built the self-hosted path instead of Azure Application Gateway, as a direct cost-conscious decision made mid-session: `app-vm1`/`app-vm2` each run an `owasp/modsecurity-crs:nginx` container proxying to the local app, with `azureops-lb`'s health probe and load-balancing rule re-pointed to port 8080 so every request now passes through WAF inspection. Verified end-to-end through the full real path (internet -> Load Balancer -> WAF -> app): a normal request returned `Hello from app-vm1`, and a SQL-injection-style payload (`?id=1' OR '1'='1`) was blocked with HTTP 403 before ever reaching the Python app — the same protection Application Gateway's WAF SKU would provide, at zero additional Azure cost.",
+      },
     ],
   },
 ]

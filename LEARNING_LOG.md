@@ -485,3 +485,54 @@ curl.exe -v -o NUL -w "HTTP %{http_code}`n" https://azureopscopilotstore.blob.co
 - My own prediction (external access to a "publicly disabled" storage account would time out) was wrong — it's important to state a prediction, test it, and correct it openly rather than write up only the version that matches what was expected going in.
 
 **Cost check:** One private endpoint (~$0.01/hr) added, negligible. No other new spend this chapter.
+
+---
+
+## Module 6 — Azure Networking, Chapter 7 (Application Gateway/WAF — built as software WAF instead) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 7 — Application Gateway and WAF concepts. Redirected mid-session by explicit user request to a self-hosted software WAF (nginx + ModSecurity + OWASP CRS on existing VMs) instead of Azure Application Gateway, for cost reasons.
+
+**What I did:**
+- User raised a real architectural/cost concern: Chapter 5's Load Balancer is a managed Azure PaaS resource with real ongoing cost (~$0.025/hr + data processing), separate from the VM compute already being paid for, and asked whether a self-hosted software load balancer/WAF on existing VMs would be more cost-appropriate for a learning-budget project, referencing standard "software vs cloud load balancer" industry concepts.
+- Presented both options with a real cost comparison and asked for direction via two explicit decisions: (1) keep the existing Azure LB running for a few more days for side-by-side comparison rather than deleting it immediately, (2) build Chapter 7 as a self-hosted nginx+ModSecurity WAF instead of Azure Application Gateway+WAF (which would have cost ~$0.25-0.45/hr, meaningfully more than the LB).
+- Confirmed the project's existing plan already aligns with this cost philosophy for two other components: Qdrant's planned 3-node cluster (Module 9) is self-hosted by necessity (no native Azure managed offering), and Redis already runs self-hosted via docker-compose rather than Azure Cache for Redis.
+- Deployed `owasp/modsecurity-crs:nginx` (Docker) on `app-vm1`, proxying to the existing Python app on `localhost:8000`. Hit a real bug: the container runs as an unprivileged user by design and cannot bind port 80; had to use its supported default (`PORT=8080`) instead, and update all downstream references (LB rule, NSG) to match rather than fighting the constraint.
+- Verified real WAF behavior directly on `app-vm1`: a normal request returned the app's actual response; a SQL-injection-style payload (`?id=1' OR '1'='1`) was blocked with HTTP 403 by ModSecurity before reaching the app at all.
+- Repeated the identical setup on `app-vm2`, confirmed identical results on both normal and malicious requests.
+- Re-pointed `azureops-lb`'s health probe and load-balancing rule from backend port 8000 to 8080, so ALL traffic passes through the WAF layer rather than leaving a bypass path directly to the raw app — added the matching NSG rules (`AzureLoadBalancer` source for the probe, `Internet` source for real client traffic to 8080), reusing the exact two-rule pattern discovered and understood in Chapter 5.
+- Verified the complete real path end-to-end through the public Load Balancer IP: normal request returned the app's response, the same SQLi payload was blocked with HTTP 403 — confirming the WAF protects the actual production traffic path, not just localhost on each VM in isolation.
+- Flagged (not yet cleaned up) that the old `Allow-Internet-8000`/`Allow-LB-Probe-8000` NSG rules are now vestigial since nothing routes to port 8000 through the LB anymore — not a live risk since these VMs have no public IP, but worth removing for hygiene.
+
+**Commands used:**
+```bash
+# On each backend VM
+sudo apt install -y docker.io && sudo systemctl enable --now docker
+sudo docker run -d --name waf-proxy --network host --restart unless-stopped \
+  -e BACKEND=http://localhost:8000 -e PARANOIA=1 -e PORT=8080 \
+  owasp/modsecurity-crs:nginx
+
+# Verified directly on the VM
+curl -s http://localhost:8080                                          # -> app's normal response
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
+  "http://localhost:8080/?id=1%27%20OR%20%271%27=%271"                 # -> HTTP 403
+
+# Re-pointed the LB to the WAF layer
+az network lb probe update --lb-name azureops-lb -n health-probe --port 8080 --path /health
+az network lb rule update --lb-name azureops-lb -n http-rule --backend-port 8080
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-LB-Probe-8080 --priority 121 \
+  --source-address-prefixes AzureLoadBalancer --destination-port-ranges 8080
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-Internet-8080 --priority 106 \
+  --source-address-prefixes Internet --destination-port-ranges 8080
+
+# Verified through the real public path
+curl -s http://<lb-public-ip>                                          # -> app's response
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
+  "http://<lb-public-ip>/?id=1%27%20OR%20%271%27=%271"                 # -> HTTP 403
+```
+
+**What broke / what I learned:**
+- The `owasp/modsecurity-crs:nginx` image deliberately runs as an unprivileged user and refuses to bind ports below 1024 — this is a real security hardening choice on the image maintainers' part, not a bug to route around; the correct response is to use the supported higher port and adjust everything downstream (LB, NSG) to match, not to try to force privileged-port binding.
+- A cost/architecture concern raised mid-session is worth pausing for, not just noting and continuing — this redirected an entire chapter's approach and produced a more cost-appropriate result than the original plan would have.
+- Reusing existing VMs for an additional workload (WAF proxy alongside the app itself) is a legitimate, common pattern for cost-constrained environments, with the honest tradeoff being config duplication across nodes and no dedicated WAF tier to scale independently of the app tier.
+
+**Cost check:** Zero new Azure resources this chapter — Docker containers on already-running, already-paid-for VMs. The user explicitly chose to keep the Chapter 5 Load Balancer running (rather than deleting it) for direct comparison against this software approach, so that small ongoing cost (~$0.025/hr) continues by deliberate choice, not oversight.

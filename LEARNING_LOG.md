@@ -872,3 +872,55 @@ All 11 chapters done, a genuinely working pipeline, not just correct-looking YAM
 - One real stale-local-main mishap caught and recovered (twice) without losing any work
 
 Seven modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking, CI/CD.
+
+---
+
+## Module 8 — Kubernetes Fundamentals, Chapters 1-5 (real 3-node HA cluster) — 2026-09-21
+
+**Plan item(s):** Module 8, Chapters 1-5 — why orchestration, architecture, pods, Deployments, Services. Built as a real, working self-managed Kubernetes cluster rather than a conceptual walkthrough, per explicit user request to avoid AKS cost and build/understand clustering directly.
+
+**What I did:**
+- User explicitly asked to skip Azure Kubernetes Service (even clarified AKS's control plane is actually free on the default tier — only node VMs cost money) in favor of building a real self-managed cluster, to learn the underlying mechanics directly rather than have AKS abstract them away — consistent with this project's own stated "learn the concept before the Azure service" philosophy.
+- Compared self-managed options (kubeadm, k3s, k0s, MicroK8s) and chose **k3s**: genuinely production-grade, CNCF-conformant, but bundles CNI (Flannel)/storage/ingress in one binary — better suited to the modest `Standard_B2s_v2` nodes already in use than vanilla kubeadm's fully-manual setup.
+- User's plan called for 3 nodes (real HA, proper etcd quorum). Attempted to create a 3rd VM — hit a real, hard blocker: this subscription's Central India regional vCPU quota (4, already fully consumed by `app-vm1`+`app-vm2`) has no self-service increase path (`ResourceNotAvailableForOffer`, a Free Trial-offer restriction) — confirmed by actually trying `az quota update`, not assumed.
+- User's own idea solved it: reuse `azureops-vm01`, the dormant Phase 1 VM, as the 3rd node instead of provisioning a new one — zero new vCPU request needed, just restarting an already-existing (if currently deallocated) VM.
+- `azureops-vm01` is in a different region (southindia) and a completely separate, unpeered VNet (`azureops-vm01VNET`, `10.0.0.0/16`) from `azureops-vnet` (`10.10.0.0/16`, centralindia) where `app-vm1`/`app-vm2` live. Set up real bidirectional VNet peering between them (no address overlap, verified before peering), then added NSG rules on both sides scoped specifically to each other's address space (not Internet) for k3s's required ports (6443 API server, 2379-2380 etcd, 10250 kubelet, 8472/udp Flannel VXLAN) — same least-privilege NSG discipline established since Module 6.
+- Verified real cross-region connectivity (`ping`, ~17-18ms round-trip) before installing anything, rather than assuming the peering + NSG rules were sufficient.
+- Installed k3s as a genuine 3-node HA server cluster: `app-vm1` bootstrapped with `--cluster-init` (embedded etcd), `app-vm2` and `azureops-vm01` joined as additional server nodes (not just workers) via `--server https://10.10.1.4:6443` with the real join token.
+- Verified for real: `kubectl get nodes` showed all 3 `Ready` with `control-plane,etcd` roles; deployed a real `nginx:alpine` Deployment with 3 replicas, confirmed the scheduler placed one pod per node automatically with distinct pod-network IPs.
+- **Ran a real failure test**, not just a health check: stopped k3s on `azureops-vm01` to simulate a node outage. Confirmed the node correctly showed `NotReady`, the API server (queried via `app-vm1`) stayed fully responsive — proving etcd quorum survived with 2/3 nodes — and a live `kubectl scale` command still worked, scheduling the new replica onto a healthy node. Noted honestly that the pod already running on the failed node didn't get evicted/rescheduled within the test window, since Kubernetes' default node-eviction grace period is several minutes, not instant — didn't overclaim instant failover.
+- Restarted `azureops-vm01`'s k3s, confirmed full recovery (`kubectl get nodes` showed all 3 `Ready` again), cleaned up the test deployment.
+
+**Commands used:**
+```bash
+# Hit the real quota blocker
+az vm create ... --size Standard_B2s_v2 ...   # QuotaExceeded: Total Regional Cores 4/4
+az quota update --resource-name standardBSv2Family ... # ResourceNotAvailableForOffer
+
+# VNet peering (bidirectional)
+az network vnet peering create --name azureops-vnet-to-vm01vnet --vnet-name azureops-vnet --remote-vnet azureops-vm01VNET --allow-vnet-access true
+az network vnet peering create --name azureops-vm01vnet-to-azureops-vnet --vnet-name azureops-vm01VNET --remote-vnet azureops-vnet --allow-vnet-access true
+
+# NSG rules for k3s, VNet-scoped not Internet-scoped
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-K3s-From-VM01VNet --source-address-prefixes 10.0.0.0/16 --destination-port-ranges 6443 2379-2380 10250 8472
+az network nsg rule create --nsg-name azureops-vm01NSG --name Allow-K3s-From-AppSubnet --source-address-prefixes 10.10.0.0/16 --destination-port-ranges 6443 2379-2380 10250 8472
+
+# k3s HA install
+curl -sfL https://get.k3s.io | sh -s - server --cluster-init --node-ip=10.10.1.4 --advertise-address=10.10.1.4   # app-vm1
+curl -sfL https://get.k3s.io | K3S_TOKEN='...' sh -s - server --server https://10.10.1.4:6443 --node-ip=10.10.1.5 --advertise-address=10.10.1.5   # app-vm2
+curl -sfL https://get.k3s.io | K3S_TOKEN='...' sh -s - server --server https://10.10.1.4:6443 --node-ip=10.0.0.4 --advertise-address=10.0.0.4     # azureops-vm01
+
+# Verification and failure test
+kubectl get nodes -o wide
+kubectl create deployment hello-k3s --image=nginx:alpine --replicas=3
+sudo systemctl stop k3s     # on azureops-vm01, simulating failure
+kubectl scale deployment hello-k3s --replicas=4   # while 1/3 nodes down -- worked
+sudo systemctl start k3s    # recovery
+```
+
+**What broke / what I learned:**
+- Azure Free Trial-type subscriptions can't self-service quota increases at all (`ResourceNotAvailableForOffer`) — this is a hard wall, not something to retry around; the only paths are converting the subscription type or working within the existing limit.
+- Reusing a stopped, already-existing VM in a completely different region/VNet is a legitimate way around a regional vCPU quota cap, but it trades simplicity for real cross-region networking work (peering, NSG rules on both sides, latency verification) — worth doing deliberately, not by accident.
+- A 3-node etcd cluster's HA claim is only real once actually tested — stopping a node and confirming the API server stays responsive (not just watching `NotReady` appear) is what separates "should be HA" from "verified HA."
+
+**Cost check:** Zero new Azure compute — `app-vm1`/`app-vm2` (Module 6) and `azureops-vm01` (Phase 1, restarted from deallocated) are all VMs already being paid for. The only new resource is the VNet peering link itself (free to establish; cross-region data transfer has a small per-GB cost, negligible at this cluster's actual traffic volume).

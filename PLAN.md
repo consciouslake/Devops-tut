@@ -162,6 +162,16 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 
 **Outcome:** understand the core Kubernetes control model before using AKS.
 
+**Status (2026-09-21):** In progress — Chapters 1-5 done, with a real, working 3-node HA cluster, not a conceptual walkthrough:
+- User explicitly requested self-managed Kubernetes instead of AKS to avoid cost and to learn the control-plane mechanics directly — matches this project's own "learn the concept before the Azure service" philosophy.
+- Hit a real hard blocker creating a 3rd VM: this subscription's Central India regional vCPU quota (4, already fully used by `app-vm1`+`app-vm2`) can't be increased via self-service (`ResourceNotAvailableForOffer` — a Free Trial-offer restriction). User's own idea: reuse the dormant Phase 1 VM (`azureops-vm01`) as the 3rd node instead of provisioning a new one — zero new vCPU request.
+- `azureops-vm01` is in a different region (southindia) and a different, unpeered VNet — set up real bidirectional VNet peering (`azureops-vnet` centralindia <-> `azureops-vm01VNET` southindia), added NSG rules scoped to each other's address space (not Internet) for k3s's required ports, and verified real cross-region connectivity (~17-18ms ping) before installing anything.
+- Installed **k3s** (chosen over kubeadm for being genuinely production-grade but bundling CNI/storage/ingress in one binary, better suited to modest `Standard_B2s_v2` nodes) as a true 3-node HA server cluster (embedded etcd, `--cluster-init` + 2 joins), spanning two Azure regions.
+- Verified for real, not assumed: `kubectl get nodes` showed all 3 `Ready` with `control-plane,etcd` roles; deployed a real 3-replica workload, confirmed the scheduler spread one pod per node automatically; **stopped k3s on one node to simulate a real failure** — confirmed the API server stayed responsive (etcd quorum survived on 2/3 nodes) and new scheduling still worked; restarted the node and confirmed full recovery.
+- Zero new Azure compute cost — reused `app-vm1`/`app-vm2` (Module 6) and `azureops-vm01` (Phase 1), all already-paid-for VMs.
+
+Chapters 6-11 (ConfigMaps/Secrets, Namespaces/RBAC, health probes, Ingress, rolling updates, troubleshooting) remaining. Full chapter content for 1-5 in the frontend curriculum browser. See LEARNING_LOG.md "Module 8" for full detail.
+
 ### Module 9 — Azure Kubernetes Service (AKS)
 
 1. AKS architecture and responsibilities
@@ -339,6 +349,20 @@ currently behind `azureops-lb`) and whatever fronts the Qdrant cluster,
 rather than making two separate one-off decisions. Note these are related
 but distinct problems: the app tier is plain HTTP load balancing; Qdrant
 has its own internal Raft-based clustering, so its "load balancing" need
+
+**Update, 2026-09-21 (later same day):** a real 3-node self-managed
+Kubernetes cluster now exists (k3s, spanning `app-vm1`/`app-vm2`/
+`azureops-vm01`), with Traefik already running as a bundled Ingress
+controller. This changes the shape of this decision: for anything that
+ends up running *inside* the cluster (the app tier, and potentially Qdrant
+if it's deployed as a StatefulSet there), Kubernetes' own Service/Ingress
+primitives are the natural "software LB" answer — no separate HAProxy
+investigation needed for that traffic. `azureops-lb` and the standalone
+`app-vm1`/`app-vm2` VM-based deployment from Module 6 remain a valid,
+separate comparison point (VM-based vs. cluster-based), not necessarily
+something to migrate away from immediately. Final call still deferred to
+whichever Module 8 chapter actually builds Ingress + deploys a real
+workload through it.
 is more likely a thin connection proxy than a full LB replacement.
 
 ## Out of scope initially

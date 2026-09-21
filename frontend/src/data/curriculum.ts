@@ -1087,13 +1087,15 @@ export const modules: Module[] = [
         ],
         troubleshooting: [
           'Traffic unexpectedly blocked despite a rule that should allow it → check for a lower-priority-number rule that matches first and denies; the first match wins, rule order (not just existence) matters.',
+          "`az network nic list-effective-nsg` shows a rule you never wrote, from an NSG you didn't create → `az vm create` auto-creates its own NIC-level NSG by default unless told not to, even when the target subnet already has one — both apply simultaneously, and traffic needs to pass both. This happened for real in the Load Balancer chapter: `app-vm1`/`app-vm2` each got an auto-created `app-vmXNSG` (SSH-only) in addition to the intended `app-subnet-nsg`, silently blocking all LB traffic until found via `list-effective-nsg` and removed.",
         ],
         interview: [
           'If a subnet-level NSG allows a port but a NIC-level NSG on the same VM denies it, what happens?',
           'What are the three default rules every NSG has, and why can\'t they be deleted?',
+          'How would you discover that a NIC has an NSG you didn\'t know about?',
         ],
         azureConnection:
-          '`app-subnet-nsg` now enforces exactly Phase 1\'s NSG pattern but built deliberately from the start rather than starting wide-open and getting fixed reactively: 80/443 open to the internet, SSH restricted to VNet-only — `gateway-subnet` intentionally has no NSG yet, meaning nothing there is reachable at all until a later chapter changes that.',
+          '`app-subnet-nsg` now enforces exactly Phase 1\'s NSG pattern but built deliberately from the start rather than starting wide-open and getting fixed reactively: 80/443 open to the internet, SSH restricted to VNet-only — `gateway-subnet` intentionally has no NSG yet, meaning nothing there is reachable at all until a later chapter changes that. The Load Balancer chapter\'s real debugging session is the live version of this chapter\'s own interview question about conflicting NIC/subnet NSGs.',
       },
       {
         id: 'public-private-connectivity',
@@ -1134,6 +1136,30 @@ export const modules: Module[] = [
         ],
         azureConnection:
           "`azureops-rt` exists with a `force-through-appliance` route (0.0.0.0/0 -> 10.10.2.10) but was deliberately left unattached to any subnet — attaching it would break outbound connectivity immediately since no real appliance listens at that IP, a live illustration of a UDR's blast radius kept safely theoretical for now.",
+      },
+      {
+        id: 'azure-load-balancer',
+        title: 'Azure Load Balancer',
+        concept:
+          "A Standard Load Balancer distributes traffic across a backend pool (VMs' NICs) based on a 5-tuple hash (source/dest IP, source/dest port, protocol) by default, so the same client connection usually lands on the same backend, but different connections spread across the pool. A health probe polls each backend on a defined port/path/interval; only backends currently passing the probe receive new traffic. Critically, a Standard LB does NOT perform source NAT on inbound traffic — the original client's public IP reaches the backend VM unchanged, which has real NSG implications (see below). Creating an LB, probe, and rule are three separate steps; nothing routes until all three exist and the backend pool actually has members in it.",
+        whyDevops:
+          "This chapter is where Module 6 stopped being theoretical — building a working Load Balancer from scratch surfaced two real, non-obvious bugs in one session, both invisible until actually tested end-to-end rather than just configured and assumed correct.",
+        handsOn: [
+          { label: 'The full build, in order', code: 'az network public-ip create --sku Standard --zone 1 2 3 --name azureops-lb-pip ...\naz network lb create --sku Standard --name azureops-lb --frontend-ip-name lb-frontend --backend-pool-name app-backend-pool ...\naz network lb probe create --protocol Http --port 8000 --path /health --interval 5 --threshold 2 ...\naz network lb rule create --frontend-port 80 --backend-port 8000 --probe-name health-probe ...\n# then attach each VM NIC\'s ip-config to the backend pool' },
+          { label: 'Verifying it for real (not just "looks configured")', code: 'for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-public-ip>; done\n# alternated between "Hello from app-vm1" and "Hello from app-vm2" -- real distribution, not assumed' },
+        ],
+        troubleshooting: [
+          "Health probe path silently wrong → Git Bash mangled `--path /health` into a Windows-style path (`C:/Program Files/Git/health`) on creation, visible only by checking `az network lb probe show`'s actual `requestPath` field — both backends were \"unhealthy\" against a path that could never exist, and the LB just dropped all traffic with no error, only a connection timeout. Fixed with `MSYS_NO_PATHCONV=1` prefixed on the `probe update` call.",
+          'LB configured correctly, probe passing, backend pool populated — still connection-timeout → check for an NSG blocking the *forwarded client traffic specifically*, not just the health probe: a rule allowing `AzureLoadBalancer` as source only covers probe traffic; real client requests arrive with the original internet source IP preserved (Standard LB doesn\'t SNAT inbound), so `Internet` also needs an explicit allow to the backend port.',
+          "An NSG rule you're certain you wrote doesn't appear to apply at all → check `az network nic list-effective-nsg`'s full `value[]` array (not just `value[0]`) for a second, auto-created NIC-level NSG stacking on top of the intended subnet-level one — this is exactly what silently blocked everything in this session until removed.",
+        ],
+        interview: [
+          'Why does a health probe passing not guarantee client traffic will actually reach a backend?',
+          'What\'s the practical security implication of a Standard Load Balancer preserving the original client IP instead of doing SNAT?',
+          'Walk through how you\'d debug an LB that accepts connections but every request times out.',
+        ],
+        azureConnection:
+          "`azureops-lb` now genuinely load-balances `app-vm1`/`app-vm2` on port 8000 behind a public frontend on port 80, and it took real debugging to get there: a mangled health-probe path (Git Bash path-mangling, the same bug class as Module 4/5), a missing NSG rule for actual client traffic vs. probe traffic, and a redundant auto-created NIC-level NSG stacking on the intended subnet-level one. Failover was verified for real too — stopping `pyapp` on `app-vm1` made all 8 test requests land on `app-vm2` within ~20s, and restarting it brought both back into rotation automatically, no manual re-registration needed.",
       },
     ],
   },

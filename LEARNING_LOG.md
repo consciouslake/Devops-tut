@@ -364,3 +364,73 @@ az network route-table route create --resource-group azureops-copilot-rg --route
 - A profile fix applied mid-session (Module 5's `.bash_profile` change) only affects terminal windows opened *after* the fix — an already-open window keeps its stale environment until manually re-sourced or the window is closed and reopened.
 
 **Cost check:** VNet, subnets, NSG, route table, and Private DNS zone are all free — no billable resources created in Chapters 1-4. Chapters 5+ (Load Balancer, Application Gateway+WAF, Front Door) introduce real cost and are being kept running for multiple days per explicit user preference, a deliberate deviation from this project's usual same-day-teardown discipline for pricier services.
+
+---
+
+## Module 6 — Azure Networking, Chapter 5 (Load Balancer) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 5 — Azure Load Balancer, built and verified for real including failover.
+
+**What I did:**
+- Checked VM size/zone availability in `centralindia` before committing to a design, since Phase 1 hit repeated `SkuNotAvailable` errors there — found `Standard_B2s_v2` is zone-restricted (zones 1/2 blocked for this subscription) but zone 3 works; verified with a disposable test VM, then cleaned up its leftover NIC/NSG/disk (VM deletion doesn't cascade-delete attached resources).
+- Created two backend VMs (`app-vm1`, `app-vm2`) in `app-subnet`, zone 3, no public IPs — reachable only through the Load Balancer by design.
+- Built a Standard Load Balancer (`azureops-lb`) from scratch: Standard SKU zone-redundant public IP, frontend config, empty backend pool, an HTTP health probe on `/health:8000`, and a load-balancing rule (80 -> 8000).
+- Deployed the app to both VMs via `az vm run-command invoke` instead of SSH, since they intentionally have no public IP/SSH path — wrote the deploy script to a local file first (`deploy-app.sh`) rather than inlining nested heredocs into a `--scripts` string argument, since that level of nested quoting is fragile in Git Bash.
+- **Bug 1 — mangled health probe path:** `az network lb probe create --path /health` got Git-Bash-mangled into `C:/Program Files/Git/health` (visible only by checking `requestPath` in `az network lb probe show`), silently marking both backends unhealthy. The LB just timed out every request with no useful error. Fixed with `MSYS_NO_PATHCONV=1 az network lb probe update --path /health`.
+- **Bug 2 — real client traffic still blocked after fixing the probe:** Standard Load Balancer does not SNAT inbound traffic — the original client IP reaches the backend unchanged. The NSG only had an `AzureLoadBalancer`-source rule for port 8000 (covers health probes only); actual client requests arriving with `Internet` as the source were still blocked. Added an explicit `Internet` -> 8000 allow rule.
+- **Bug 3 — still blocked after both fixes:** used `az network nic list-effective-nsg` (checking the *full* `value[]` array, not just `value[0]`) and found each backend VM's NIC had its own auto-created NSG (`app-vm1NSG`/`app-vm2NSG`, SSH-only) stacked on top of the intended `app-subnet-nsg` — `az vm create` does this by default unless told not to, even when the target subnet already has an NSG. Both NSGs apply simultaneously; traffic must pass both. Removed the redundant NIC-level NSGs entirely.
+- After all three fixes: verified real load distribution (8 requests alternated between `app-vm1`/`app-vm2`), verified real failover (stopped `pyapp` on `app-vm1`, 8/8 requests rerouted to `app-vm2` within ~20s), verified automatic recovery (restarted it, both VMs back in rotation without any manual re-registration).
+- Updated the earlier NSG chapter's content with this real discovery rather than leaving it as a hypothetical interview question.
+
+**Commands used:**
+```bash
+# Confirmed VM size/zone availability
+az vm create ... --size Standard_B2s_v2 --zone 3 --location centralindia   # works
+az vm delete -g $RG -n lb-test-vm --yes --no-wait
+az network nic delete / az network nsg delete / az disk delete             # cleanup leftovers
+
+# Backend VMs, no public IP
+az vm create -g $RG -n app-vm1 --vnet-name azureops-vnet --subnet app-subnet --public-ip-address "" --zone 3 ...
+az vm create -g $RG -n app-vm2 ...
+
+# Load Balancer
+az network public-ip create --sku Standard --zone 1 2 3 --name azureops-lb-pip
+az network lb create --sku Standard --name azureops-lb --frontend-ip-name lb-frontend --backend-pool-name app-backend-pool
+az network lb probe create --protocol Http --port 8000 --path /health --interval 5 --threshold 2
+az network lb rule create --frontend-port 80 --backend-port 8000 --probe-name health-probe
+
+# Attach backend pool (had to discover actual ip-config name -- not "ipconfig1")
+IPCONFIG_NAME=$(az network nic show -n app-vm1VMNic --query "ipConfigurations[0].name" -o tsv)  # "ipconfigapp-vm1"
+az network nic ip-config address-pool add --nic-name app-vm1VMNic --ip-config-name "$IPCONFIG_NAME" \
+  --lb-name azureops-lb --address-pool app-backend-pool
+
+# Deploy app via RunCommand (no SSH path to these VMs)
+az vm run-command invoke -n app-vm1 --command-id RunShellScript --scripts @deploy-app.sh
+
+# Bug 1 fix
+MSYS_NO_PATHCONV=1 az network lb probe update --lb-name azureops-lb -n health-probe --path /health
+
+# Bug 2 fix
+az network nsg rule create --nsg-name app-subnet-nsg --name Allow-Internet-8000 --priority 105 \
+  --source-address-prefixes Internet --destination-port-ranges 8000
+
+# Bug 3 diagnosis and fix
+az network nic list-effective-nsg -n app-vm1VMNic --query "value[].{nsg:networkSecurityGroup.id}" -o table
+az network nic update -n app-vm1VMNic --remove networkSecurityGroup
+az network nsg delete -n app-vm1NSG
+
+# Failover verification
+az vm run-command invoke -n app-vm1 --scripts "sudo systemctl stop pyapp"
+for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-ip>; done   # 8/8 app-vm2
+az vm run-command invoke -n app-vm1 --scripts "sudo systemctl start pyapp"
+for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-ip>; done   # both again
+```
+
+**What broke / what I learned:**
+- `az network lb probe show`'s `requestPath` field is the ground truth for what a probe actually checks — never assume a `--path` argument landed correctly in a Git Bash environment without verifying the created resource's actual value.
+- Standard Load Balancer's lack of inbound SNAT is a real, non-obvious security/NSG design point: "the health probe passes" and "real traffic can reach the backend" are two genuinely different things requiring two different NSG rules (`AzureLoadBalancer` source vs `Internet` source).
+- `az network nic list-effective-nsg`'s `value[]` array can contain more than one NSG (NIC-level and subnet-level both, when both exist) — querying only `value[0]` gives an incomplete, misleading picture; this cost real debugging time before checking the full array.
+- `az vm create`'s default behavior of auto-creating a NIC-level NSG is easy to miss when a subnet-level NSG already exists and seems like it should be sufficient — worth explicitly suppressing in future VM creation commands for this project (not yet applied retroactively to Phase 1's `azureops-vm01`, which likely has the same redundant NIC-level NSG).
+- `basename`/nested-heredoc quoting inside a `--scripts` CLI argument is fragile in Git Bash; writing the script to a local file first and referencing it with `@filename` is far more reliable for anything beyond a one-liner.
+
+**Cost check:** `app-vm1`, `app-vm2` (Standard_B2s_v2 each), and `azureops-lb` (Standard SKU, ~$0.025/hr) plus its Standard public IP are now running and being kept up per the user's explicit multi-day-study preference — real, ongoing cost, worth checking Cost Management again in a few days.

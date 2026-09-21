@@ -195,6 +195,8 @@ Full chapter content for all 11 chapters in the frontend curriculum browser. See
 
 **Outcome:** deploy and operate a realistic workload on managed Kubernetes.
 
+**Status (2026-09-21):** Done — as a deliberate comparison-only chapter, no real AKS cluster created, per the explicit decision made before Module 8. Content grounded directly in what Module 8's real cluster required to build by hand (etcd HA, CNI, ServiceLB workaround, manual node provisioning, no autoscaling/managed upgrades) versus what AKS's managed control plane would have provided instead (Free tier control plane, native cloud LoadBalancer integration, Managed Identity for node/pod Azure access, cluster autoscaler, one-command upgrades). Framed honestly as a tool-fit decision, not "AKS is better" — every real incident from Module 8 (quota wall, tmpfs-vs-cgroup discovery, container-name gotcha) is the concrete answer to what a managed control plane would have hidden.
+
 ### Module 10 — Monitoring & Observability
 
 1. Metrics vs logs vs traces

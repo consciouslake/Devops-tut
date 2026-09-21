@@ -984,3 +984,21 @@ kubectl rollout undo deployment rollout-demo   # clean recovery
 All 11 chapters done on a real, self-managed, 3-node HA cluster spanning two Azure regions — built specifically to avoid AKS cost and to learn the control-plane mechanics directly, per explicit user request. Zero new Azure compute cost across the entire module (reused `app-vm1`, `app-vm2`, and the reactivated Phase 1 VM `azureops-vm01`). Real incidents throughout, not staged: a hard vCPU quota wall worked around with the user's own idea, a cross-region VNet peering built from scratch, a verified HA failure test, and six chapters' worth of genuine Kubernetes debugging (RBAC boundaries, OOM mechanics, rollout safety) — more hands-on real infrastructure work than any module since Module 6.
 
 Eight modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking, CI/CD, Kubernetes Fundamentals.
+
+---
+
+## Module 9 — Azure Kubernetes Service (AKS), comparison-only — 2026-09-21
+
+**Plan item(s):** Module 9. Deliberately built as a single comparison chapter, no real AKS resource created — per the explicit decision made before starting Module 8.
+
+**What I did:**
+- Verified AKS control-plane pricing tiers directly (Free/Standard/Premium) via `WebFetch` against Azure's own pricing page rather than stating a remembered figure — confirmed Free tier is genuinely $0 (no SLA), and deliberately did NOT state a specific dollar figure for Standard/Premium since the page only shows those as placeholders requiring the pricing calculator — avoided repeating the earlier `trivy-action`-style mistake of asserting an unverified specific number.
+- Wrote the comparison grounded entirely in Module 8's real experience: what had to be built by hand (etcd HA, Flannel CNI, k3s's ServiceLB workaround for `type=LoadBalancer`, manual node provisioning, no autoscaler) versus what AKS's managed control plane provides instead (Free tier control plane, native Azure Load Balancer integration, Managed Identity for node/pod Azure access — the AKS-native version of Module 7's hand-built OIDC federation, cluster autoscaler, one-command managed upgrades).
+- Framed the conclusion honestly as tool-fit, not a verdict — a team without dedicated Kubernetes operational capacity gets real value from AKS's SLA and automation; a learning context or a team with strict cost constraints gets more from self-managed, as this project just demonstrated directly.
+
+**Commands used:** None — this chapter deliberately built no new resources, consistent with the pre-Module-8 decision.
+
+**What broke / what I learned:**
+- Nothing broke — the discipline here was resisting the temptation to state exact AKS Standard/Premium pricing from memory when the source page itself didn't show a concrete number, after already having gotten burned once this session by asserting unverified specifics (the invented `trivy-action` tag in Module 7).
+
+**Cost check:** Zero new spend — no AKS cluster created, consistent with the module's entire premise.

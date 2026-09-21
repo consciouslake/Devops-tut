@@ -752,3 +752,20 @@ python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"   # sy
 - GitHub Actions' default `GITHUB_TOKEN` needs an explicit `permissions: packages: write` block at the job level to push to `ghcr.io` — without it, the token defaults to read-only package access and login succeeds while push silently fails to authorize.
 
 **Cost check:** Zero new spend — chose the free option deliberately, after comparing it honestly against the paid one rather than assuming the paid one was required.
+
+---
+
+## Module 7 — real CI failure: invented action version tag — 2026-09-21
+
+**What broke:** the actual GitHub Actions run of `docker-build-scan` failed at "Set up job" with `Error: Unable to resolve action 'aquasecurity/trivy-action@0.28.0', unable to find version '0.28.0'` — a tag that doesn't exist. It was guessed rather than verified when the job was first written.
+
+**What I did:**
+- Used `WebFetch` against the action's real GitHub releases page to find actually-existing tags — confirmed the project uses a `v`-prefixed scheme (e.g. `v0.36.0`), not the bare `0.28.0` guessed earlier.
+- Considered pinning to an exact commit SHA (the more secure practice for a third-party action, especially notable since the releases page mentioned a past supply-chain security incident around duplicate releases) — but `WebFetch` summarizes API responses through a smaller model, and two separate fetches returned two different-looking SHAs (one was the annotated-tag-object SHA, not the commit SHA) — too much risk of silently transcribing a wrong 40-character hash and reintroducing the same class of bug. Used the verified tag `v0.36.0` instead, a lower-risk fix given the tool available.
+- While fixing this, also proactively verified `docker/login-action@v3` (added in the same chapter, also unverified when written) — found `v4` is now current, bumped to it rather than leave a second unverified tag in place.
+- Fixed, validated YAML syntax, committed, and pushed immediately.
+
+**What I learned:**
+- Never write a specific version/tag for a third-party GitHub Action from memory or assumption — verify it exists first via the actual releases page, the same discipline this project already applies to `az` commands and Docker image tags.
+- When a tool that summarizes content through a smaller model (like `WebFetch`) returns something security-sensitive (a commit hash, a credential-shaped string), treat the output as a lead to verify further, not a fact to paste directly into a config file — the risk of a subtly wrong long hex string is real and the failure mode (a broken or, worse, wrong-but-valid pin) can be hard to notice later.
+- Real GitHub Actions runs are the actual ground truth for whether a workflow is correct — local YAML syntax validation (which passed the whole time) only catches syntax errors, not semantic ones like a nonexistent action version.

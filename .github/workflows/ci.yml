@@ -130,6 +130,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: docker-build-scan
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A GitHub Environment gate -- "production" requires a manual approval
+    # before this job's steps run at all, even though everything upstream
+    # (test, scan, publish) already passed. This is Continuous Delivery, not
+    # Continuous Deployment (see Chapter 1's CI-vs-CD framing): a human
+    # decides when the verified, published artifact actually gets acted on.
+    environment: production
     permissions:
       id-token: write
       contents: read

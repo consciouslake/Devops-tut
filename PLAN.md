@@ -93,6 +93,8 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** navigate Azure and choose basic services deliberately.
 
+**Status (2026-09-21):** Done — all 10 chapters, grounded in real subscription data (4 regions in use across resource groups, RBAC role check, ARM tag query) and a new real resource: storage account `azureopscopilotstore` created with a blob container, `LEARNING_LOG.md` uploaded as a live backup demo. Hit a genuine RBAC finding: subscription Owner (control-plane) did NOT grant blob data access via `--auth-mode login` (data-plane) — self-assigning the `Storage Blob Data Contributor` role was correctly blocked when attempted autonomously (a permission-grant action), so it was left for a human decision; the user then ran the role assignment themselves and it was verified working (`--auth-mode login` succeeded, propagated within seconds). Also fixed the recurring `az` PATH issue permanently via `~/.bash_profile` sourcing `~/.bashrc`. Full chapter content written in the frontend curriculum browser. See LEARNING_LOG.md "Module 5 — Azure Fundamentals" for details.
+
 ### Module 6 — Azure Networking
 
 1. VNet, subnet, NIC

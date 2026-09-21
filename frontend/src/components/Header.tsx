@@ -1,11 +1,15 @@
-import { Topic } from '../data/topics'
+import { Chapter, Module } from '../data/curriculum'
 
 export function Header({
-  activeTopic,
+  activeModule,
+  activeChapter,
   onGoOverview,
+  onGoModule,
 }: {
-  activeTopic: Topic | null
+  activeModule: Module | null
+  activeChapter: Chapter | null
   onGoOverview: () => void
+  onGoModule: () => void
 }) {
   return (
     <div className="header">
@@ -14,14 +18,24 @@ export function Header({
           <div className="brand-mark" />
           <span className="brand-name">AzureOps Copilot</span>
         </button>
-        {activeTopic && (
+        {activeModule && (
           <>
             <span className="breadcrumb">/</span>
             <button className="breadcrumb-back" onClick={onGoOverview}>
-              ← All topics
+              ← All modules
             </button>
             <span className="breadcrumb">/</span>
-            <span className="breadcrumb-active mono">{activeTopic.title}</span>
+            {activeChapter ? (
+              <>
+                <button className="breadcrumb-back" onClick={onGoModule}>
+                  {activeModule.title}
+                </button>
+                <span className="breadcrumb">/</span>
+                <span className="breadcrumb-active mono">{activeChapter.title}</span>
+              </>
+            ) : (
+              <span className="breadcrumb-active mono">{activeModule.title}</span>
+            )}
           </>
         )}
       </div>

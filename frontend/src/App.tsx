@@ -1,27 +1,63 @@
 import { useState } from 'react'
 import { Header } from './components/Header'
-import { Overview } from './components/Overview'
-import { TopicDetail } from './components/TopicDetail'
+import { ModuleOverview } from './components/ModuleOverview'
+import { ModuleDetail } from './components/ModuleDetail'
+import { ChapterDetail } from './components/ChapterDetail'
 import { AIMentor } from './components/AIMentor'
-import { topics } from './data/topics'
+import { modules } from './data/curriculum'
 import './styles.css'
 
 export default function App() {
-  const [activeTopicId, setActiveTopicId] = useState<string | null>(null)
+  const [activeModuleNumber, setActiveModuleNumber] = useState<number | null>(null)
+  const [activeChapterId, setActiveChapterId] = useState<string | null>(null)
 
-  const activeIndex = topics.findIndex((t) => t.id === activeTopicId)
-  const activeTopic = activeIndex >= 0 ? topics[activeIndex] : null
+  const activeModule = modules.find((m) => m.number === activeModuleNumber) ?? null
+  const activeChapterIndex = activeModule
+    ? activeModule.chapters.findIndex((c) => c.id === activeChapterId)
+    : -1
+  const activeChapter = activeChapterIndex >= 0 ? activeModule!.chapters[activeChapterIndex] : null
+
+  function goOverview() {
+    setActiveModuleNumber(null)
+    setActiveChapterId(null)
+  }
+
+  function goModule() {
+    setActiveChapterId(null)
+  }
+
+  function selectModule(n: number) {
+    setActiveModuleNumber(n)
+    setActiveChapterId(null)
+  }
+
+  const mentorSubtitle = activeChapter
+    ? `Focused on ${activeChapter.title}`
+    : activeModule
+      ? `Focused on ${activeModule.title}`
+      : 'Ask about any topic'
 
   return (
     <div className="app-shell">
-      <Header activeTopic={activeTopic} onGoOverview={() => setActiveTopicId(null)} />
+      <Header
+        activeModule={activeModule}
+        activeChapter={activeChapter}
+        onGoOverview={goOverview}
+        onGoModule={goModule}
+      />
       <div className="main-grid">
-        {activeTopic ? (
-          <TopicDetail topic={activeTopic} order={activeIndex + 1} />
+        {activeChapter ? (
+          <ChapterDetail chapter={activeChapter} order={activeChapterIndex + 1} />
+        ) : activeModuleNumber !== null ? (
+          <ModuleDetail
+            module={activeModule}
+            moduleNumber={activeModuleNumber}
+            onSelectChapter={setActiveChapterId}
+          />
         ) : (
-          <Overview topics={topics} onSelect={setActiveTopicId} />
+          <ModuleOverview modules={modules} onSelect={selectModule} />
         )}
-        <AIMentor subtitle={activeTopic ? `Focused on ${activeTopic.title}` : 'Ask about any topic'} />
+        <AIMentor subtitle={mentorSubtitle} />
       </div>
     </div>
   )

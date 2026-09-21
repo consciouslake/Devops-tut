@@ -13,6 +13,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 ## 13-Module Roadmap
 
 ### Module 1 — Linux & Bash
+
 1. Linux and the DevOps operating model
 2. Filesystem navigation and file operations
 3. Users, groups, permissions, sudo, ownership
@@ -25,7 +26,10 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** operate and troubleshoot a Linux server confidently.
 
+**Status (2026-09-21):** Done — VM created (`azureops-vm01`, southindia), Python app deployed as a systemd service (`pyapp.service`, `Restart=always`), self-healing verified (killed the process, watched systemd restart it via journalctl), NSG port-opening debugged end-to-end (curl worked locally but not externally until `az vm open-port` was run), core commands (chmod/chown/df/journalctl) practiced. Full chapter content written in the frontend curriculum browser. See LEARNING_LOG.md "Phase 1 — Linux fundamentals VM" for details.
+
 ### Module 2 — Git & GitHub
+
 1. Version control mental model
 2. Repositories, commits, branches
 3. Staging, history, diff, restore, reset, revert
@@ -39,6 +43,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** use Git as the control system for infrastructure and application delivery.
 
 ### Module 3 — Networking Fundamentals
+
 1. Network basics: IP, MAC, ports, protocols
 2. OSI and TCP/IP models
 3. IPv4, CIDR, subnetting
@@ -53,6 +58,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** understand the traffic path before learning Azure networking.
 
 ### Module 4 — Docker
+
 1. Why containers exist
 2. Images, layers, containers
 3. Dockerfile
@@ -67,6 +73,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** package, run, debug, and publish applications as containers.
 
 ### Module 5 — Azure Fundamentals
+
 1. Azure global infrastructure: regions, zones, geography
 2. Tenants, subscriptions, resource groups
 3. Azure Resource Manager and tags
@@ -81,6 +88,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** navigate Azure and choose basic services deliberately.
 
 ### Module 6 — Azure Networking
+
 1. VNet, subnet, NIC
 2. NSG and traffic filtering
 3. Public vs private IPs
@@ -95,6 +103,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** understand how Azure traffic flows from the internet to the application.
 
 ### Module 7 — CI/CD with GitHub Actions
+
 1. CI vs CD and deployment lifecycle
 2. GitHub Actions workflow syntax
 3. Runners, jobs, steps, actions
@@ -110,6 +119,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** create a repeatable build-test-scan-deploy pipeline.
 
 ### Module 8 — Infrastructure as Code with Terraform
+
 1. Why IaC
 2. Terraform workflow and state
 3. Providers, resources, variables, outputs
@@ -125,6 +135,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** provision and change Azure infrastructure safely through code.
 
 ### Module 9 — Kubernetes Fundamentals
+
 1. Why orchestration
 2. Kubernetes architecture
 3. Pods and containers
@@ -140,6 +151,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** understand the core Kubernetes control model before using AKS.
 
 ### Module 10 — Azure Kubernetes Service (AKS)
+
 1. AKS architecture and responsibilities
 2. Nodes, node pools, networking
 3. Identity and workload identity
@@ -154,6 +166,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** deploy and operate a realistic workload on managed Kubernetes.
 
 ### Module 11 — Monitoring & Observability
+
 1. Metrics vs logs vs traces
 2. SLIs, SLOs, error budgets
 3. Azure Monitor and Log Analytics
@@ -168,6 +181,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** detect, investigate, and explain production behavior.
 
 ### Module 12 — Azure Security & Governance
+
 1. Shared responsibility
 2. Entra ID and RBAC
 3. Managed identities
@@ -183,6 +197,7 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 **Outcome:** secure the application and its delivery pipeline without hard-coded secrets.
 
 ### Module 13 — Azure Front Door & Production Edge
+
 1. Reverse proxy and edge delivery
 2. Front Door architecture
 3. Endpoints, routes, domains, origins, origin groups
@@ -234,6 +249,7 @@ Developer
 ```
 
 Final capstone requirements:
+
 - Multi-environment configuration
 - IaC-only rebuild
 - CI/CD with OIDC
@@ -247,6 +263,7 @@ Final capstone requirements:
 ## Recommended order of daily study
 
 For each chapter:
+
 1. Read the concept
 2. Run the commands yourself
 3. Break something intentionally
@@ -266,6 +283,16 @@ For each chapter:
 - Milestone 6: Kubernetes/AKS
 - Milestone 7: Observability + security
 - Milestone 8: Front Door + multi-region capstone
+
+## Deferred goal — devopspk.online via Azure Front Door
+
+2026-09-21: explicit end goal — publish the AzureOps Copilot frontend on
+`devopspk.online` through Azure Front Door, as hands-on practice for
+Module 13. Deliberately deferred until Phase 1 (Linux fundamentals) is
+finished, per the foundations-first philosophy above — tracked here so it
+isn't lost. When picked up, it belongs after Module 6 (Azure Networking,
+custom VNet/NSG/LB) and pairs with Module 13's chapters (Front Door
+architecture, custom domains/TLS, WAF at the edge).
 
 ## Out of scope initially
 

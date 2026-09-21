@@ -809,3 +809,17 @@ MSYS_NO_PATHCONV=1 az role assignment create \
 - Asking "what should this actually deploy to" *before* writing the deploy step, rather than defaulting to whatever target seems most obvious, is what kept this chapter genuinely cost-neutral — the "obvious" choice (wake up a VM) would have introduced real ongoing cost for a chapter whose actual point was proving the auth mechanism, not standing up infrastructure.
 
 **Cost check:** Zero new spend — Azure AD identity objects (App Registration, Service Principal, Federated Credential, RBAC role assignment) are all free; the `deploy` job only reads existing resources, no VM was started.
+
+---
+
+## Module 7 — real CI failure: Federated Credential subject mismatch — 2026-09-21
+
+**What broke:** the first real run of the `deploy` job failed immediately at `azure/login@v3` with `AADSTS700213: No matching federated identity record found for presented assertion subject 'repo:consciouslake@166535976/Devops-tut@1378577773:ref:refs/heads/main'`.
+
+**Root cause:** the actual OIDC token GitHub issued had a subject claim including stable numeric IDs after both the owner and repo name (`consciouslake@166535976`, `Devops-tut@1378577773`), not the plain `repo:consciouslake/Devops-tut:ref:refs/heads/main` format the Federated Credential was configured with. The Azure error log itself printed the real, presented subject claim — direct, trustworthy evidence rather than something to guess about.
+
+**Fix:** `az ad app federated-credential update`, replacing the subject with the exact string from the error log: `repo:consciouslake@166535976/Devops-tut@1378577773:ref:refs/heads/main`. Verified via `az ad app federated-credential list` that the update took.
+
+**What I learned:**
+- GitHub's OIDC subject claim format for `repo:` isn't always the simple documented `owner/repo` string — it can include immutable numeric IDs appended after the owner and repo names (likely a security hardening to prevent subject-reuse after an org/repo rename or transfer). The safest way to get the Federated Credential's subject exactly right is to read it directly from a real failed run's error log, not to write it from the documented format alone and assume it matches.
+- This is the second real GitHub Actions failure this module (after the invented `trivy-action` tag) that only surfaced from an actual run, not from local YAML validation — reinforcing that a real CI run is the only reliable ground truth for whether OIDC/Actions configuration is correct.

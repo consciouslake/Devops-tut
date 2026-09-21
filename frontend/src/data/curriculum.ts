@@ -1796,6 +1796,36 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'azure-kubernetes-service',
+    number: 9,
+    mono: 'AK',
+    title: 'Azure Kubernetes Service (AKS)',
+    outcome: 'Deploy and operate a realistic workload on managed Kubernetes.',
+    chapters: [
+      {
+        id: 'aks-vs-self-managed',
+        title: 'AKS vs. the self-managed k3s cluster — what managed Kubernetes actually buys you',
+        concept:
+          "Deliberately built as a comparison chapter, not a hands-on one — no real AKS cluster was created, per an explicit cost-conscious decision made before Module 8, once it was clear the actual goal (learning Kubernetes' mechanics) was better served by building a cluster by hand. What AKS genuinely adds over what Module 8 built manually: (1) **Managed control plane** — the Free tier costs nothing and removes etcd/API-server operational burden entirely (no more \"stop a node, watch quorum survive\" — Azure handles that invisibly); Standard/Premium tiers add a financially-backed uptime SLA and longer-term Kubernetes version support, at a real ongoing cost (check the Azure Pricing Calculator for the current rate — it varies by region and wasn't worth guessing a number for a chapter that isn't being built). (2) **Native cloud load balancer integration** — `type=LoadBalancer` actually provisions a real Azure Load Balancer automatically; Module 8's cluster needed k3s's bundled ServiceLB workaround specifically because that integration doesn't exist outside a cloud provider's own managed offering. (3) **Managed Identity for node/pod Azure access** — nodes can authenticate to other Azure resources (ACR, Key Vault) without any stored credential, the AKS-native version of the OIDC federation built by hand in Module 7. (4) **Cluster autoscaler and node pool management** — AKS can add/remove entire VM nodes automatically based on demand; Module 8's cluster is a fixed 3 nodes, sized and managed manually. (5) **One-command managed upgrades** — AKS handles draining and upgrading nodes through a Kubernetes version bump; Module 8's cluster would need that done manually, node by node.",
+        whyDevops:
+          "The right comparison isn't \"AKS is better\" or \"self-managed is better\" — it's matching the tool to what's actually needed. A team without deep Kubernetes operational experience, or one that can't justify dedicated time for etcd/node maintenance, gets real value from AKS's SLA and automation. A learning context — or a team that specifically wants deep operational fluency, or has hard cost constraints — gets more from self-managed. Both are legitimate; conflating \"managed\" with \"correct\" is the actual mistake.",
+        handsOn: [
+          { label: 'What Module 8 had to build by hand vs. what AKS provides out of the box', code: "# Module 8, built manually:\n# - etcd HA (3-node embedded etcd, own responsibility to test/monitor quorum)\n# - CNI (Flannel, bundled with k3s but still a real component to understand)\n# - LoadBalancer Service support (k3s's ServiceLB workaround)\n# - Node provisioning (created/joined each VM by hand)\n# - No autoscaling, no managed upgrades\n\n# AKS, for the SAME cluster shape:\naz aks create --resource-group <rg> --name <cluster> --node-count 3 \\\n  --tier free --generate-ssh-keys\n# etcd, CNI, node provisioning, and control-plane HA all become Azure's\n# responsibility immediately -- at the cost of losing the hands-on\n# visibility into exactly how those pieces work, which Module 8 deliberately kept" },
+        ],
+        troubleshooting: [
+          'Assuming AKS is automatically more secure/reliable than a hand-built cluster → it removes a category of *operational* risk (you forgetting to patch etcd, mismanaging quorum) but doesn\'t remove *configuration* risk — the same NSG/RBAC/resource-limit mistakes made and fixed throughout Module 8 are just as possible on AKS if configured carelessly.',
+        ],
+        interview: [
+          'What specifically does AKS\'s control plane manage that a self-managed cluster requires you to manage yourself?',
+          'Under what circumstances would you recommend self-managed Kubernetes over AKS despite AKS being "the managed option"?',
+          'What real, ongoing cost does AKS\'s Standard/Premium tier add over the Free tier, and what does that cost actually buy?',
+        ],
+        azureConnection:
+          "Module 8's entire real cluster — cross-region VNet peering, k3s HA install, RBAC/ConfigMap/OOM/Ingress/rollback work — is the concrete answer to \"what would AKS have hidden from me\": every real incident in that module (the quota wall, the tmpfs-vs-cgroup discovery, the container-name gotcha) happened specifically because the infrastructure was hand-built rather than abstracted away by a managed control plane.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [

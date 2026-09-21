@@ -510,7 +510,7 @@ export const modules: Module[] = [
         concept:
           "DNS translates human-readable names (github.com) to IP addresses. A records point a name to an IPv4 address; CNAME records alias one name to another; TXT records hold arbitrary text (often used for domain ownership verification). Resolution is hierarchical: your resolver asks a recursive resolver (often your router or ISP), which — if not cached — queries root servers, then TLD servers (.com), then the domain's authoritative nameserver for the final answer. TTL controls how long a result can be cached before it must be re-checked.",
         whyDevops:
-          "DNS misconfiguration or propagation delay is one of the most common causes of \"it works for me but not for you\" — different resolvers/caches see different states during a TTL window. Custom domains (devopspk.online, Module 13's Front Door work) live entirely in this system.",
+          "DNS misconfiguration or propagation delay is one of the most common causes of \"it works for me but not for you\" — different resolvers/caches see different states during a TTL window. Custom domains (devopspk.online, Module 12's Front Door work) live entirely in this system.",
         handsOn: [
           { label: 'Resolve a real name and see the resolver chain', code: 'nslookup github.com' },
         ],
@@ -523,7 +523,7 @@ export const modules: Module[] = [
           'Why might a DNS change appear live for you but not for someone else, immediately after making it?',
         ],
         azureConnection:
-          "When devopspk.online's A record eventually points at a VM/LB/Front Door IP (deferred goal, tracked in PLAN.md for Module 13), this is exactly the mechanism that makes it resolve — plus GoDaddy's DNS panel already sitting ready per the Day 0 plan.",
+          "When devopspk.online's A record eventually points at a VM/LB/Front Door IP (deferred goal, tracked in PLAN.md for Module 12), this is exactly the mechanism that makes it resolve — plus GoDaddy's DNS panel already sitting ready per the Day 0 plan.",
       },
       {
         id: 'http-https-tls',
@@ -544,7 +544,7 @@ export const modules: Module[] = [
           'Explain what TLS actually protects against, and what it does NOT protect against (e.g. a compromised endpoint).',
         ],
         azureConnection:
-          "This session's live curl showed the actual handshake: TCP connect on 443, TLS negotiation (visible as `schannel: renegotiating SSL/TLS connection` on Windows), then the HTTP GET and its 200 response — the same sequence a browser does silently for `https://devopspk.online` once TLS is set up via certbot (Module 6) or Front Door-managed certs (Module 13).",
+          "This session's live curl showed the actual handshake: TCP connect on 443, TLS negotiation (visible as `schannel: renegotiating SSL/TLS connection` on Windows), then the HTTP GET and its 200 response — the same sequence a browser does silently for `https://devopspk.online` once TLS is set up via certbot (Module 6) or Front Door-managed certs (Module 12).",
       },
       {
         id: 'routing-nat',
@@ -715,7 +715,7 @@ export const modules: Module[] = [
           'What\'s the difference between a volume and a bind mount?',
         ],
         azureConnection:
-          '`docker-compose.yml`\'s `QDRANT_HOST: qdrant` and `REDIS_URL: redis://redis:6379/0` environment values are exactly this DNS-by-service-name mechanism — the same pattern Kubernetes Services provide later in Module 9/10, just at a smaller scale.',
+          '`docker-compose.yml`\'s `QDRANT_HOST: qdrant` and `REDIS_URL: redis://redis:6379/0` environment values are exactly this DNS-by-service-name mechanism — the same pattern Kubernetes Services provide later in Module 8/9, just at a smaller scale.',
       },
       {
         id: 'config-secrets',
@@ -953,7 +953,7 @@ export const modules: Module[] = [
         concept:
           "Azure's compute spectrum trades control for abstraction: a Virtual Machine gives full OS control (you patch, configure, scale it yourself) — most flexible, most operational burden. App Service is a managed platform for web apps (no OS access, built-in scaling/deployment slots, less flexible). Container Apps runs containers with built-in autoscaling (including to zero) without managing the underlying orchestrator. Azure Functions runs event-triggered code with no server management at all, billed per-execution. The right choice depends on how much control you actually need versus how much operational overhead you're willing to own.",
         whyDevops:
-          "This project deliberately started at the most manual end (a raw VM) specifically to force Linux/systemd/networking fundamentals hands-on — Module 6 onward moves toward VMSS, and Module 9/10 toward AKS, trading manual control for managed scaling as the fundamentals solidify.",
+          "This project deliberately started at the most manual end (a raw VM) specifically to force Linux/systemd/networking fundamentals hands-on — Module 6 onward moves toward VMSS, and Module 8/9 toward AKS, trading manual control for managed scaling as the fundamentals solidify.",
         handsOn: [
           { label: 'What this project actually uses today', code: '# Only one compute type touched so far:\naz vm list -d -o table   # azureops-vm01, Standard_B2s_v2, southindia' },
         ],
@@ -965,7 +965,7 @@ export const modules: Module[] = [
           'What does Azure Functions\' "no server management" actually mean at the infrastructure level — where does the code actually run?',
         ],
         azureConnection:
-          "AzureOps Copilot's own compute path across this curriculum: raw VM now (Phase 1, deliberately manual) -> VM Scale Set (Module 6, managed scaling) -> optionally AKS (Module 9/10, full container orchestration) — each step trading hand-built control for managed abstraction on top of the same underlying concepts already learned manually.",
+          "AzureOps Copilot's own compute path across this curriculum: raw VM now (Phase 1, deliberately manual) -> VM Scale Set (Module 6, managed scaling) -> optionally AKS (Module 8/9, full container orchestration) — each step trading hand-built control for managed abstraction on top of the same underlying concepts already learned manually.",
       },
       {
         id: 'storage-data',
@@ -973,7 +973,7 @@ export const modules: Module[] = [
         concept:
           "Blob Storage holds unstructured data (files, backups, images) in containers, with tiers (Hot/Cool/Archive) trading access latency for cost. Azure Files provides SMB/NFS file shares mountable like a network drive. Managed disks are the persistent storage attached to VMs (what `azureops-vm01`'s OS disk actually is). None of Blob/Files/managed disks are databases — they're storage primitives; actual managed database services (Module 5 Chapter 8) are a separate, higher-level category.",
         whyDevops:
-          "Blob Storage specifically is the backbone of Module 13's backup-and-restore requirement — Qdrant volume snapshots exported to Blob is the planned disaster-recovery mechanism for this project.",
+          "Blob Storage specifically is the backbone of the Capstone's backup-and-restore requirement — Qdrant volume snapshots exported to Blob is the planned disaster-recovery mechanism for this project.",
         handsOn: [
           { label: 'Real blob storage created and used this session', code: 'az storage account create --name azureopscopilotstore --resource-group azureops-copilot-rg \\\n  --location centralindia --sku Standard_LRS --kind StorageV2\naz storage container create --account-name azureopscopilotstore --name learning-log-backup --auth-mode login\naz storage blob upload --account-name azureopscopilotstore --container-name learning-log-backup \\\n  --name LEARNING_LOG.md --file LEARNING_LOG.md --auth-mode key' },
         ],
@@ -985,7 +985,7 @@ export const modules: Module[] = [
           'Why does Hot/Cool/Archive tiering exist instead of one uniform storage tier?',
         ],
         azureConnection:
-          'A real `Standard_LRS` storage account (`azureopscopilotstore`) now exists in `azureops-copilot-rg` with `LEARNING_LOG.md` uploaded as a literal backup blob — a small working preview of Module 13\'s planned Qdrant-volume-to-Blob backup/restore capstone requirement.',
+          'A real `Standard_LRS` storage account (`azureopscopilotstore`) now exists in `azureops-copilot-rg` with `LEARNING_LOG.md` uploaded as a literal backup blob — a small working preview of the Capstone\'s planned Qdrant-volume-to-Blob backup/restore requirement.',
       },
       {
         id: 'databases-managed-services',
@@ -995,7 +995,7 @@ export const modules: Module[] = [
         whyDevops:
           "Knowing when a managed service is the obviously right call (Redis — Azure Cache for Redis exists and is mature) versus when self-hosting is the only real option (Qdrant — no native Azure managed offering as of this curriculum) is a real architectural decision, not a default.",
         handsOn: [
-          { label: 'This project\'s actual choice, stated explicitly', code: '# Redis and Qdrant both currently run as self-hosted containers (docker-compose.yml)\n# Redis: Azure Cache for Redis exists as a managed alternative for production\n# Qdrant: no native Azure managed offering -> self-hosted 3-node cluster is the plan (Module 9)' },
+          { label: 'This project\'s actual choice, stated explicitly', code: '# Redis and Qdrant both currently run as self-hosted containers (docker-compose.yml)\n# Redis: Azure Cache for Redis exists as a managed alternative for production\n# Qdrant: no native Azure managed offering -> self-hosted 3-node cluster is the plan (Module 8)' },
         ],
         troubleshooting: [
           'Defaulting to "always use the managed service" without checking if one exists for your specific technology → Qdrant is the counterexample in this exact project; the right call there is a deliberately self-hosted, clustered deployment.',
@@ -1005,7 +1005,7 @@ export const modules: Module[] = [
           'Why might a team choose to self-host a database despite a managed alternative existing?',
         ],
         azureConnection:
-          "This project's Redis could realistically move to Azure Cache for Redis in a production hardening pass; Qdrant cannot, since it has no equivalent — directly shaping Module 9's plan to run it as a real 3-node self-hosted cluster instead of assuming a managed swap-in exists.",
+          "This project's Redis could realistically move to Azure Cache for Redis in a production hardening pass; Qdrant cannot, since it has no equivalent — directly shaping Module 8's plan to run it as a real 3-node self-hosted cluster instead of assuming a managed swap-in exists.",
       },
       {
         id: 'monitoring-cost',
@@ -1216,7 +1216,7 @@ export const modules: Module[] = [
         concept:
           "Azure DNS hosts DNS zones — public (resolvable by anyone on the internet, once delegated) or private (Chapters 3/6, resolvable only inside linked VNets). A public zone by itself does nothing until the domain's registrar NS records point at Azure's assigned nameservers ('delegation') — creating the zone and adding records is completely safe and has zero effect on a live domain until that delegation step happens, since nothing on the internet will query Azure for that domain's records until the registrar says to. Once delegated, Azure's 4 assigned nameservers (spread across different top-level domains — .com/.net/.org/.info — for resilience against any single TLD having an outage) answer queries for every record in the zone.",
         whyDevops:
-          "Understanding that zone creation and delegation are two separate, independently-safe steps is what makes it possible to build and test real DNS infrastructure without any risk to a live production domain — exactly the approach used here to avoid touching `devopspk.online` before Module 13's Front Door work is actually ready for it.",
+          "Understanding that zone creation and delegation are two separate, independently-safe steps is what makes it possible to build and test real DNS infrastructure without any risk to a live production domain — exactly the approach used here to avoid touching `devopspk.online` before Module 12's Front Door work is actually ready for it.",
         handsOn: [
           { label: 'A real public zone, with real records, on a throwaway test domain (not devopspk.online)', code: 'az network dns zone create --name azureops-lab.test --resource-group azureops-copilot-rg\naz network dns record-set a add-record --zone-name azureops-lab.test --record-set-name app --ipv4-address <lb-ip>\naz network dns record-set cname set-record --zone-name azureops-lab.test --record-set-name www --cname app.azureops-lab.test\naz network dns record-set txt add-record --zone-name azureops-lab.test --record-set-name @ --value "verification-string"' },
           { label: 'Proving it resolves, WITHOUT registrar delegation', code: 'nslookup app.azureops-lab.test ns1-08.azure-dns.com\n# queries Azure\'s nameserver directly, bypassing normal DNS resolution entirely -- proves the zone works before any registrar change' },
@@ -1231,7 +1231,7 @@ export const modules: Module[] = [
           'How would you prove a DNS zone\'s records are correct before touching a production domain\'s delegation?',
         ],
         azureConnection:
-          "A real public zone (`azureops-lab.test`) was built with A/CNAME/TXT records and verified by querying Azure's own nameserver directly — `app.azureops-lab.test` resolved to `azureops-lb`'s real public IP. This is deliberately decoupled from `devopspk.online`, which stays untouched until Module 13's Front Door work is ready to actually delegate it — the same zone-creation pattern would apply then, just with the real domain and Front Door's endpoint as the target instead of a throwaway test zone and the Load Balancer's IP.",
+          "A real public zone (`azureops-lab.test`) was built with A/CNAME/TXT records and verified by querying Azure's own nameserver directly — `app.azureops-lab.test` resolved to `azureops-lb`'s real public IP. This is deliberately decoupled from `devopspk.online`, which stays untouched until Module 12's Front Door work is ready to actually delegate it — the same zone-creation pattern would apply then, just with the real domain and Front Door's endpoint as the target instead of a throwaway test zone and the Load Balancer's IP.",
       },
       {
         id: 'azure-front-door-concepts',
@@ -1241,7 +1241,7 @@ export const modules: Module[] = [
         whyDevops:
           "Recognizing when you DON'T need a piece of infrastructure yet is as important a DevOps skill as knowing how to build it. This project is genuinely single-region today (`azureops-vnet` only exists in `centralindia`) — Front Door's core value (multi-region failover, global edge proximity) doesn't apply until that changes, which is exactly why no real Front Door resource was built this chapter.",
         handsOn: [
-          { label: 'No resource built this chapter — deliberately', code: '# Front Door needs a domain to be meaningful, and the only real domain\n# this project has (devopspk.online) is intentionally reserved for\n# Module 13, once there\'s an actual multi-region origin setup to route\n# between. Building it now would mean either touching that domain early\n# or building throwaway infrastructure that teaches configuration syntax\n# without the real failover scenario Front Door exists for.' },
+          { label: 'No resource built this chapter — deliberately', code: '# Front Door needs a domain to be meaningful, and the only real domain\n# this project has (devopspk.online) is intentionally reserved for\n# Module 12, once there\'s an actual multi-region origin setup to route\n# between. Building it now would mean either touching that domain early\n# or building throwaway infrastructure that teaches configuration syntax\n# without the real failover scenario Front Door exists for.' },
         ],
         troubleshooting: [
           'Reaching for Front Door "because it\'s the production-grade option" without a second region → if there\'s only one origin, Front Door adds cost and complexity for the same effective routing a regional Load Balancer/Application Gateway already provides; its differentiator is multi-origin failover and global edge presence, neither of which exists with a single origin.',
@@ -1252,7 +1252,7 @@ export const modules: Module[] = [
           'What has to exist (architecturally) before Front Door is actually worth its cost?',
         ],
         azureConnection:
-          'Deliberately not built for this project yet — `devopspk.online` remains untouched, reserved for Module 13 once a genuine multi-region origin setup exists for Front Door to actually add value in front of, rather than being configured prematurely against a single origin.',
+          'Deliberately not built for this project yet — `devopspk.online` remains untouched, reserved for Module 12 once a genuine multi-region origin setup exists for Front Door to actually add value in front of, rather than being configured prematurely against a single origin.',
       },
       {
         id: 'edge-alternatives-comparison',
@@ -1305,10 +1305,10 @@ export const modules: Module[] = [
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },
-  { number: 8, title: 'Infrastructure as Code with Terraform', outcome: 'Provision and change Azure infrastructure safely through code.' },
-  { number: 9, title: 'Kubernetes Fundamentals', outcome: 'Understand the core Kubernetes control model before using AKS.' },
-  { number: 10, title: 'Azure Kubernetes Service (AKS)', outcome: 'Deploy and operate a realistic workload on managed Kubernetes.' },
-  { number: 11, title: 'Monitoring & Observability', outcome: 'Detect, investigate, and explain production behavior.' },
-  { number: 12, title: 'Azure Security & Governance', outcome: 'Secure the application and its delivery pipeline without hard-coded secrets.' },
-  { number: 13, title: 'Azure Front Door & Production Edge', outcome: 'Understand when and how Front Door fits into a global Azure application.' },
+  { number: 8, title: 'Kubernetes Fundamentals', outcome: 'Understand the core Kubernetes control model before using AKS.' },
+  { number: 9, title: 'Azure Kubernetes Service (AKS)', outcome: 'Deploy and operate a realistic workload on managed Kubernetes.' },
+  { number: 10, title: 'Monitoring & Observability', outcome: 'Detect, investigate, and explain production behavior.' },
+  { number: 11, title: 'Azure Security & Governance', outcome: 'Secure the application and its delivery pipeline without hard-coded secrets.' },
+  { number: 12, title: 'Azure Front Door & Production Edge', outcome: 'Understand when and how Front Door fits into a global Azure application.' },
+  { number: 13, title: 'Infrastructure as Code with Terraform', outcome: 'Capture everything built across Modules 1-12 as code, and prove it by rebuilding from Terraform alone.' },
 ]

@@ -320,7 +320,185 @@ Add approvals, environment protection, failure notifications and evidence.
 
 ---
 
-## Module 8 — Terraform
+## Module 8 — Kubernetes
+
+### Chapter 1 — Why Kubernetes
+Scheduling, desired state and self-healing.
+
+### Chapter 2 — Architecture
+Control plane, worker nodes, API server, scheduler, controllers, etcd concepts.
+
+### Chapter 3 — Pods
+Pod lifecycle and why containers are grouped.
+
+### Chapter 4 — Deployments
+Desired replicas, rollout and rollback.
+
+### Chapter 5 — Services
+ClusterIP, NodePort, LoadBalancer and service discovery.
+
+### Chapter 6 — Config and secrets
+ConfigMap, Secret, environment injection and mounted configuration.
+
+### Chapter 7 — Health and resources
+Startup/readiness/liveness probes, requests and limits.
+
+### Chapter 8 — Ingress
+HTTP routing and TLS termination.
+
+### Chapter 9 — RBAC and namespaces
+Isolation and least privilege.
+
+### Chapter 10 — Troubleshooting
+kubectl get/describe/logs/exec, events, rollout history and common failure modes.
+
+---
+
+## Module 9 — AKS
+
+### Chapter 1 — AKS architecture
+What Microsoft manages vs what you manage.
+
+### Chapter 2 — Nodes and networking
+Node pools, Azure CNI concepts, ingress and traffic path.
+
+### Chapter 3 — Identity
+Managed identity and workload identity.
+
+### Chapter 4 — Registry integration
+Pull private images from ACR.
+
+### Chapter 5 — Application deployment
+Deploy AzureOps Copilot with Helm.
+
+### Chapter 6 — TLS and ingress
+Expose the application securely.
+
+### Chapter 7 — Scaling
+Horizontal Pod Autoscaler and cluster/node scaling concepts.
+
+### Chapter 8 — Operations
+Logs, metrics, upgrades, node maintenance and disruption.
+
+### Chapter 9 — Cost/security
+Right-sizing, namespaces, network controls, identity and image hygiene.
+
+### Chapter 10 — AKS project
+Run the capstone workload end-to-end.
+
+---
+
+## Module 10 — Observability
+
+### Chapter 1 — Three signals
+Metrics, logs, traces and their relationship.
+
+### Chapter 2 — SLI/SLO basics
+Availability, latency, error rate and user-facing objectives.
+
+### Chapter 3 — Azure Monitor
+Metrics, activity logs, alerts and workbooks.
+
+### Chapter 4 — Log Analytics
+Queries with KQL and practical investigation.
+
+### Chapter 5 — Application Insights
+Request telemetry, dependencies, exceptions and traces.
+
+### Chapter 6 — Structured logging
+Consistent fields, correlation IDs and useful log levels.
+
+### Chapter 7 — Prometheus/Grafana
+Understand scraping, time series, dashboards and alerting.
+
+### Chapter 8 — Trace the RAG path
+Measure Redis lookup, embedding, Qdrant search and Gemini latency separately.
+
+### Chapter 9 — Incident lab
+Break a dependency and diagnose it from telemetry.
+
+### Chapter 10 — Production dashboard
+Create a concise dashboard and meaningful alerts.
+
+---
+
+## Module 11 — Security & Governance
+
+### Chapter 1 — Shared responsibility
+Know what Azure secures and what you must secure.
+
+### Chapter 2 — Identity/RBAC
+Scopes, role assignments and least privilege.
+
+### Chapter 3 — Managed identity
+Replace embedded credentials with workload identity.
+
+### Chapter 4 — Key Vault
+Secret lifecycle, access policies/RBAC, references and rotation.
+
+### Chapter 5 — Network security
+NSGs, private endpoints, WAF and secure ingress.
+
+### Chapter 6 — CI security
+Dependency scanning, container scanning, secret scanning and SAST.
+
+### Chapter 7 — Defender for Cloud
+Security posture and recommendation workflow.
+
+### Chapter 8 — Azure Policy
+Allowed SKUs, required tags and governance-as-code concepts.
+
+### Chapter 9 — Threat modeling
+Identify assets, trust boundaries and likely attack paths.
+
+### Chapter 10 — Security review
+Perform a practical review of AzureOps Copilot and remediate findings.
+
+---
+
+## Module 12 — Azure Front Door
+
+### Chapter 1 — Why edge services exist
+Latency, global routing, TLS termination and centralized ingress.
+
+### Chapter 2 — Front Door architecture
+Profile, endpoint, route, domain, origin group and origin.
+
+### Chapter 3 — Routing
+Path matching, forwarding, redirects and route precedence.
+
+### Chapter 4 — Health probes/failover
+Probe endpoint design, healthy/unhealthy origins and failover behavior.
+
+### Chapter 5 — Custom domains/TLS
+Domain validation and certificate lifecycle.
+
+### Chapter 6 — Caching/rules
+Cache behavior, rule sets, headers and redirects.
+
+### Chapter 7 — WAF
+Managed rules, custom rules, rate limiting concepts and logs.
+
+### Chapter 8 — Service comparison
+Front Door vs Application Gateway vs Load Balancer vs Traffic Manager.
+
+### Chapter 9 — Multi-region
+Design an active/active or active/passive application entry pattern.
+
+### Chapter 10 — Failure lab
+Disable an origin, observe health changes, verify routing, restore service.
+
+### Chapter 11 — Production review
+Document the request path, security boundaries, failure behavior and costs.
+
+---
+
+## Module 13 — Terraform
+
+Moved to the end of the roadmap (2026-09-21) — consolidates everything built
+manually across Modules 1-12 into code, once there's a complete real system
+to actually capture, rather than learning Terraform syntax mid-sequence
+before most of what it would express even exists yet.
 
 ### Chapter 1 — IaC
 Declarative infrastructure, reproducibility, review and drift.
@@ -358,179 +536,6 @@ terraform fmt/validate/plan on pull requests; controlled apply after review.
 
 ### Chapter 10 — Rebuild
 Delete the environment and recreate it from Terraform.
-
----
-
-## Module 9 — Kubernetes
-
-### Chapter 1 — Why Kubernetes
-Scheduling, desired state and self-healing.
-
-### Chapter 2 — Architecture
-Control plane, worker nodes, API server, scheduler, controllers, etcd concepts.
-
-### Chapter 3 — Pods
-Pod lifecycle and why containers are grouped.
-
-### Chapter 4 — Deployments
-Desired replicas, rollout and rollback.
-
-### Chapter 5 — Services
-ClusterIP, NodePort, LoadBalancer and service discovery.
-
-### Chapter 6 — Config and secrets
-ConfigMap, Secret, environment injection and mounted configuration.
-
-### Chapter 7 — Health and resources
-Startup/readiness/liveness probes, requests and limits.
-
-### Chapter 8 — Ingress
-HTTP routing and TLS termination.
-
-### Chapter 9 — RBAC and namespaces
-Isolation and least privilege.
-
-### Chapter 10 — Troubleshooting
-kubectl get/describe/logs/exec, events, rollout history and common failure modes.
-
----
-
-## Module 10 — AKS
-
-### Chapter 1 — AKS architecture
-What Microsoft manages vs what you manage.
-
-### Chapter 2 — Nodes and networking
-Node pools, Azure CNI concepts, ingress and traffic path.
-
-### Chapter 3 — Identity
-Managed identity and workload identity.
-
-### Chapter 4 — Registry integration
-Pull private images from ACR.
-
-### Chapter 5 — Application deployment
-Deploy AzureOps Copilot with Helm.
-
-### Chapter 6 — TLS and ingress
-Expose the application securely.
-
-### Chapter 7 — Scaling
-Horizontal Pod Autoscaler and cluster/node scaling concepts.
-
-### Chapter 8 — Operations
-Logs, metrics, upgrades, node maintenance and disruption.
-
-### Chapter 9 — Cost/security
-Right-sizing, namespaces, network controls, identity and image hygiene.
-
-### Chapter 10 — AKS project
-Run the capstone workload end-to-end.
-
----
-
-## Module 11 — Observability
-
-### Chapter 1 — Three signals
-Metrics, logs, traces and their relationship.
-
-### Chapter 2 — SLI/SLO basics
-Availability, latency, error rate and user-facing objectives.
-
-### Chapter 3 — Azure Monitor
-Metrics, activity logs, alerts and workbooks.
-
-### Chapter 4 — Log Analytics
-Queries with KQL and practical investigation.
-
-### Chapter 5 — Application Insights
-Request telemetry, dependencies, exceptions and traces.
-
-### Chapter 6 — Structured logging
-Consistent fields, correlation IDs and useful log levels.
-
-### Chapter 7 — Prometheus/Grafana
-Understand scraping, time series, dashboards and alerting.
-
-### Chapter 8 — Trace the RAG path
-Measure Redis lookup, embedding, Qdrant search and Gemini latency separately.
-
-### Chapter 9 — Incident lab
-Break a dependency and diagnose it from telemetry.
-
-### Chapter 10 — Production dashboard
-Create a concise dashboard and meaningful alerts.
-
----
-
-## Module 12 — Security & Governance
-
-### Chapter 1 — Shared responsibility
-Know what Azure secures and what you must secure.
-
-### Chapter 2 — Identity/RBAC
-Scopes, role assignments and least privilege.
-
-### Chapter 3 — Managed identity
-Replace embedded credentials with workload identity.
-
-### Chapter 4 — Key Vault
-Secret lifecycle, access policies/RBAC, references and rotation.
-
-### Chapter 5 — Network security
-NSGs, private endpoints, WAF and secure ingress.
-
-### Chapter 6 — CI security
-Dependency scanning, container scanning, secret scanning and SAST.
-
-### Chapter 7 — Defender for Cloud
-Security posture and recommendation workflow.
-
-### Chapter 8 — Azure Policy
-Allowed SKUs, required tags and governance-as-code concepts.
-
-### Chapter 9 — Threat modeling
-Identify assets, trust boundaries and likely attack paths.
-
-### Chapter 10 — Security review
-Perform a practical review of AzureOps Copilot and remediate findings.
-
----
-
-## Module 13 — Azure Front Door
-
-### Chapter 1 — Why edge services exist
-Latency, global routing, TLS termination and centralized ingress.
-
-### Chapter 2 — Front Door architecture
-Profile, endpoint, route, domain, origin group and origin.
-
-### Chapter 3 — Routing
-Path matching, forwarding, redirects and route precedence.
-
-### Chapter 4 — Health probes/failover
-Probe endpoint design, healthy/unhealthy origins and failover behavior.
-
-### Chapter 5 — Custom domains/TLS
-Domain validation and certificate lifecycle.
-
-### Chapter 6 — Caching/rules
-Cache behavior, rule sets, headers and redirects.
-
-### Chapter 7 — WAF
-Managed rules, custom rules, rate limiting concepts and logs.
-
-### Chapter 8 — Service comparison
-Front Door vs Application Gateway vs Load Balancer vs Traffic Manager.
-
-### Chapter 9 — Multi-region
-Design an active/active or active/passive application entry pattern.
-
-### Chapter 10 — Failure lab
-Disable an origin, observe health changes, verify routing, restore service.
-
-### Chapter 11 — Production review
-Document the request path, security boundaries, failure behavior and costs.
 
 ---
 

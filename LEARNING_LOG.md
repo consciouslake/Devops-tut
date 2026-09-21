@@ -434,3 +434,54 @@ for i in 1 2 3 4 5 6 7 8; do curl -s http://<lb-ip>; done   # both again
 - `basename`/nested-heredoc quoting inside a `--scripts` CLI argument is fragile in Git Bash; writing the script to a local file first and referencing it with `@filename` is far more reliable for anything beyond a one-liner.
 
 **Cost check:** `app-vm1`, `app-vm2` (Standard_B2s_v2 each), and `azureops-lb` (Standard SKU, ~$0.025/hr) plus its Standard public IP are now running and being kept up per the user's explicit multi-day-study preference — real, ongoing cost, worth checking Cost Management again in a few days.
+
+---
+
+## Module 6 — Azure Networking, Chapter 6 (Private Link) — 2026-09-21
+
+**Plan item(s):** Module 6, Chapter 6 — Private endpoints and Private Link, built on the real storage account from Module 5.
+
+**What I did:**
+- Created a private DNS zone with Azure's exact reserved name for Storage blob (`privatelink.blob.core.windows.net`) — deliberately distinct from the generic `azureops.internal` zone staged in Chapter 3, since automatic DNS integration requires this specific naming convention per service type.
+- Linked the zone to `azureops-vnet`, created a private endpoint (`azureopscopilotstore-blob-pe`) in `gateway-subnet` targeting the storage account's blob sub-resource, and linked a DNS zone group to auto-create the A record.
+- Hit the same Git Bash path-mangling bug again, this time inside a `$(...)` command substitution result rather than a literal argument — `--private-connection-resource-id $SA_ID` got mangled even though `$SA_ID` itself was captured cleanly; fixed with `MSYS_NO_PATHCONV=1` on the consuming command.
+- Verified from inside the VNet (via `az vm run-command` on `app-vm1`) that `azureopscopilotstore.blob.core.windows.net` resolves to `10.10.2.4` (the private endpoint's IP), not a public address.
+- Disabled public network access on the storage account entirely, then tested access from both sides: internal request (through the private endpoint) got HTTP 409; external request (from the laptop, over the public internet) got HTTP 403. Both are real HTTP responses from Azure's service layer, not connection timeouts — this contradicted my own prediction that external access would simply time out. Corrected the assumption rather than forcing the narrative: "public network access disabled" means the service itself rejects the request, not that it becomes network-invisible or loses its public DNS presence.
+
+**Commands used:**
+```bash
+az network private-dns zone create --name privatelink.blob.core.windows.net
+az network private-dns link vnet create --zone-name privatelink.blob.core.windows.net \
+  --name azureops-vnet-link --virtual-network azureops-vnet --registration-enabled false
+
+SA_ID=$(az storage account show -n azureopscopilotstore --query id -o tsv)
+MSYS_NO_PATHCONV=1 az network private-endpoint create \
+  --vnet-name azureops-vnet --subnet gateway-subnet \
+  --private-connection-resource-id "$SA_ID" --group-id blob \
+  --connection-name azureopscopilotstore-blob-connection
+
+az network private-endpoint dns-zone-group create \
+  --endpoint-name azureopscopilotstore-blob-pe --name default-zone-group \
+  --private-dns-zone privatelink.blob.core.windows.net --zone-name blob
+
+# Verified from inside the VNet
+az vm run-command invoke -n app-vm1 --scripts "getent hosts azureopscopilotstore.blob.core.windows.net"
+# -> 10.10.2.4
+
+az storage account update -n azureopscopilotstore --public-network-access Disabled
+
+# Internal test (via private endpoint)
+az vm run-command invoke -n app-vm1 --scripts "curl -s -o /dev/null -w 'HTTP %{http_code}\n' https://azureopscopilotstore.blob.core.windows.net/..."
+# -> HTTP 409
+
+# External test (laptop, PowerShell -- curl is aliased to Invoke-WebRequest there, needed curl.exe explicitly)
+curl.exe -v -o NUL -w "HTTP %{http_code}`n" https://azureopscopilotstore.blob.core.windows.net/...
+# -> HTTP 403
+```
+
+**What broke / what I learned:**
+- Git Bash's path-mangling bug isn't limited to literal `/...` arguments — it also mangles the *result* of a command substitution (`$(...)`) once that value is used as an argument starting with `/`. The mangling happens at argument-parsing time for the outer command, regardless of where the string originated.
+- In PowerShell (as opposed to Git Bash), `curl` is aliased to `Invoke-WebRequest` and doesn't accept real curl's flags — `curl.exe` invokes the actual curl binary and behaves as expected. Worth remembering since this project's terminal usage switches between Git Bash and PowerShell.
+- My own prediction (external access to a "publicly disabled" storage account would time out) was wrong — it's important to state a prediction, test it, and correct it openly rather than write up only the version that matches what was expected going in.
+
+**Cost check:** One private endpoint (~$0.01/hr) added, negligible. No other new spend this chapter.

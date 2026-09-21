@@ -1161,6 +1161,29 @@ export const modules: Module[] = [
         azureConnection:
           "`azureops-lb` now genuinely load-balances `app-vm1`/`app-vm2` on port 8000 behind a public frontend on port 80, and it took real debugging to get there: a mangled health-probe path (Git Bash path-mangling, the same bug class as Module 4/5), a missing NSG rule for actual client traffic vs. probe traffic, and a redundant auto-created NIC-level NSG stacking on the intended subnet-level one. Failover was verified for real too — stopping `pyapp` on `app-vm1` made all 8 test requests land on `app-vm2` within ~20s, and restarting it brought both back into rotation automatically, no manual re-registration needed.",
       },
+      {
+        id: 'private-link',
+        title: 'Private Link',
+        concept:
+          "A private endpoint gives an Azure PaaS service (Storage, Key Vault, SQL, etc.) a network interface with a private IP address inside your VNet, so it can be reached without traversing the public internet at all. This requires a private DNS zone with an *exact*, Azure-reserved name per service type (e.g. `privatelink.blob.core.windows.net` for Storage blob) — using an arbitrary custom zone name won't get automatically wired up by Azure's tooling. A DNS zone group then links the private endpoint to that zone, auto-creating the A record that makes the service's normal hostname resolve to the private IP for anything inside the linked VNet, while it still resolves publicly for anything outside.",
+        whyDevops:
+          "This is how a backend (like this project's FastAPI app talking to Qdrant/Redis, or a future migration to Azure Cache for Redis) reaches a managed Azure service without that traffic ever touching the public internet — reduced attack surface and often lower latency, at the cost of needing correct DNS zone naming to actually work.",
+        handsOn: [
+          { label: 'Built and verified this session, using the real storage account from Module 5', code: 'az network private-dns zone create --name privatelink.blob.core.windows.net\naz network private-dns link vnet create --zone-name privatelink.blob.core.windows.net --virtual-network azureops-vnet --registration-enabled false\naz network private-endpoint create --vnet-name azureops-vnet --subnet gateway-subnet \\\n  --private-connection-resource-id $SA_ID --group-id blob --connection-name azureopscopilotstore-blob-connection\naz network private-endpoint dns-zone-group create --endpoint-name azureopscopilotstore-blob-pe --private-dns-zone privatelink.blob.core.windows.net --zone-name blob' },
+        ],
+        troubleshooting: [
+          "A private endpoint's resource ID argument gets mangled → same Git Bash path-conversion bug as everywhere else in this project (`/subscriptions/...` → a Windows path) — this time inside a `$(...)` command substitution result, not a literal argument, which is easy to miss; `MSYS_NO_PATHCONV=1` on the consuming command fixes it regardless of where the value came from.",
+          "Using a custom/arbitrary private DNS zone name instead of the exact reserved one (`privatelink.<service>.<suffix>`) → Azure's automatic DNS integration won't connect it correctly; the zone name is not just a label, it's part of the contract.",
+          '"Disabled" public network access still returns a real HTTP response instead of a connection timeout when hit externally → this is expected, not a misconfiguration: Azure Storage rejects at its own service layer (a 403 in this project\'s real test) rather than removing its public DNS presence or blackholing the connection — "disabled" means "rejected by the service," not "network-invisible."',
+        ],
+        interview: [
+          'Why does the private DNS zone need an exact, reserved name instead of any name you choose?',
+          'If a storage account has public network access disabled, why might an external request still get an HTTP response instead of a connection timeout?',
+          'What\'s the difference between what a private endpoint provides and what disabling public network access provides — why use both together?',
+        ],
+        azureConnection:
+          'Built directly on Module 5\'s real storage account (`azureopscopilotstore`): a private endpoint (`azureopscopilotstore-blob-pe`, IP `10.10.2.4` in `gateway-subnet`) now makes `azureopscopilotstore.blob.core.windows.net` resolve privately from inside `azureops-vnet` — confirmed via `az vm run-command` from `app-vm1`. Public network access was then disabled on the account entirely; a request from inside the VNet still reached the service (HTTP 409, real rejection reason, not a network failure) while a request from the laptop over the public internet got HTTP 403 — both prove the request reached Azure\'s service layer, contradicting the naive assumption that "disabled" means invisible from outside.',
+      },
     ],
   },
 ]

@@ -1559,6 +1559,118 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'kubernetes-fundamentals',
+    number: 8,
+    mono: 'K8',
+    title: 'Kubernetes Fundamentals',
+    outcome: 'Understand the core Kubernetes control model before using AKS.',
+    chapters: [
+      {
+        id: 'why-orchestration',
+        title: 'Why orchestration',
+        concept:
+          "Running one container on one VM (Phase 1, and app-vm1/app-vm2 through Module 6) works until you need more than a handful of them: which node has capacity for a new container, what happens when a node dies, how do containers find each other as they get rescheduled onto different IPs, how do you roll out a new version without downtime. An orchestrator's job is answering all of that continuously and automatically instead of by hand. Kubernetes specifically: you declare *desired state* (\"3 replicas of this image, spread across nodes\"), and its control loop continuously reconciles actual state toward it — if a node dies, it doesn't alert you and wait, it just reschedules the missing replicas elsewhere, unprompted.",
+        whyDevops:
+          "Everything from Module 1 through Module 7 was fundamentally manual capacity/placement decisions (which VM, which port, restart it yourself if it dies) — Kubernetes is the first tool in this curriculum whose entire job is making those decisions continuously instead.",
+        handsOn: [
+          { label: 'The declarative model, proven live this session', code: "kubectl scale deployment hello-k3s --replicas=4\n# no instruction on WHICH node -- the scheduler decided, and it kept\n# deciding correctly even with one of three nodes down" },
+        ],
+        troubleshooting: [
+          'Expecting instant failover when a node dies → Kubernetes uses a grace period (node considered NotReady after ~40s of missed heartbeats, pods on it aren\'t rescheduled for several more minutes by default) rather than reacting instantly — this is deliberate, to avoid mass-rescheduling storms from a brief network blip, not a bug. Confirmed directly this session: pods already running on a stopped node kept showing "Running" in `kubectl get pods` for the first couple minutes after the node went `NotReady`.',
+        ],
+        interview: [
+          'What does "declarative" mean in the context of Kubernetes, contrasted with the manual VM-management work from earlier modules?',
+          'Why doesn\'t Kubernetes reschedule a failed node\'s pods instantly?',
+        ],
+        azureConnection:
+          "This project's own real cluster: `app-vm1`, `app-vm2`, and `azureops-vm01` (the original Phase 1 VM, reactivated) — three VMs already paid for from earlier modules, now running a genuine self-managed Kubernetes cluster instead of paying separately for Azure Kubernetes Service.",
+      },
+      {
+        id: 'kubernetes-architecture',
+        title: 'Kubernetes architecture',
+        concept:
+          "The control plane (API server, scheduler, controller-manager, etcd) makes cluster-wide decisions; each node runs a kubelet (executes the control plane's instructions locally) and a container runtime (containerd, same one Docker itself uses under the hood). etcd is the cluster's entire state, stored as a distributed key-value store using the Raft consensus algorithm — this is why it wants an odd number of members (1, 3, 5): a majority (quorum) must agree before any write is considered committed, and an odd count avoids a tie during a network split. A 3-node etcd cluster tolerates exactly 1 node failure and keeps working; losing 2 of 3 loses quorum and the cluster stops accepting writes (though existing pods keep running).",
+        whyDevops:
+          "Managed Kubernetes (AKS) hides literally everything in this chapter — the control plane is someone else's problem. Building it yourself is what makes 'the control plane needs 3 nodes for HA' something you've actually configured and tested, not a fact you memorized.",
+        handsOn: [
+          { label: 'This project\'s real, self-managed control plane', code: 'curl -sfL https://get.k3s.io | sh -s - server --cluster-init --node-ip=10.10.1.4 --advertise-address=10.10.1.4\n# k3s bundles the control plane + kubelet + containerd + CNI (Flannel) +\n# a CNI-compliant local storage provisioner + Traefik ingress, all in one\n# binary -- vanilla kubeadm would have you install and wire up each piece separately' },
+          { label: 'Proof all 3 are genuine etcd members, not just workers', code: 'kubectl get nodes\n# app-vm1, app-vm2, azureops-vm01 -- ROLES column shows "control-plane,etcd" on all three' },
+        ],
+        troubleshooting: [
+          'Considered using kubeadm instead of k3s for this build → chose k3s deliberately: it\'s genuinely production-grade (not a toy), but bundles CNI/storage/ingress that kubeadm leaves you to wire up separately — the right tradeoff for modest `Standard_B2s_v2` nodes and limited session time, while still being real, unmodified upstream Kubernetes underneath.',
+          "Cross-region cluster (centralindia + southindia) raised a real question: would ~17ms inter-node latency break etcd consensus? → tested directly rather than assumed — `ping` between nodes confirmed ~17-18ms round-trip, well within etcd's tolerance (its default heartbeat/election timeouts are measured in hundreds of milliseconds to seconds), and the cluster came up healthy.",
+        ],
+        interview: [
+          'Why does etcd need an odd number of members, and what specifically happens if a 3-node cluster loses 2 nodes?',
+          'What runs on every node regardless of whether it\'s also control-plane, and why?',
+          'What does k3s bundle that vanilla kubeadm doesn\'t, and why does that matter for resource-constrained nodes?',
+        ],
+        azureConnection:
+          "This cluster's control plane spans two Azure regions over a real VNet peering link (`azureops-vnet` <-> `azureops-vm01VNET`, centralindia <-> southindia, established this session specifically to reuse the dormant Phase 1 VM instead of hitting this subscription's 4-vCPU regional quota limit by creating a new one) — real infrastructure reuse driven by a real Azure constraint, not a clean textbook setup.",
+      },
+      {
+        id: 'pods-containers',
+        title: 'Pods and containers',
+        concept:
+          "A Pod is Kubernetes' smallest deployable unit — one or more containers that always schedule together, on the same node, sharing a network namespace (same IP, can reach each other via `localhost`) and optionally storage. Almost always one container per pod in practice; multi-container pods are for tightly-coupled helper patterns (a sidecar proxy, a log shipper) — not \"how to run more than one app,\" which is what separate pods (or Deployments managing many pod replicas) are for. Every pod gets its own IP from the CNI's pod network (Flannel here, `10.42.0.0/16`) — a genuinely separate address space from the node's own VNet IP.",
+        whyDevops:
+          "The pod-gets-its-own-IP model is what makes 'just talk to the app by name' possible cluster-wide regardless of which physical node it lands on — the conceptual leap from Module 4's Docker networking (one host, containers share that host's namespace tricks) to a multi-node model.",
+        handsOn: [
+          { label: 'Real pod IPs, one per replica, across 3 different nodes', code: 'kubectl get pods -o wide\n# hello-k3s-...-bqqfc  10.42.1.3  app-vm2\n# hello-k3s-...-xqmvd  10.42.3.3  azureops-vm01\n# hello-k3s-...-zbqrc  10.42.0.9  app-vm1\n# three different /24-ish ranges -- one per node -- routed transparently by Flannel' },
+        ],
+        troubleshooting: [
+          'Expecting a pod IP to still work after the pod restarts → pod IPs are ephemeral, reassigned on every restart/reschedule; anything that needs a stable address talks to a Service (next chapter), never a pod IP directly.',
+        ],
+        interview: [
+          'Why would you ever put two containers in the same pod instead of two separate pods?',
+          'What do containers in the same pod share that containers in different pods don\'t?',
+        ],
+        azureConnection:
+          'Verified directly this session: `kubectl create deployment hello-k3s --replicas=3` produced one pod per node automatically, each with a distinct `10.42.x.x` IP, and scaling to 4 replicas mid-node-outage added a new pod on a healthy node without any manual placement decision.',
+      },
+      {
+        id: 'deployments-replicasets',
+        title: 'Deployments and ReplicaSets',
+        concept:
+          "A Deployment declares desired state (\"this image, this many replicas\") and manages a ReplicaSet underneath, which is the thing actually responsible for keeping that many pod replicas running at all times — the Deployment layer on top adds rollout history and rolling-update behavior. If a replica's pod dies, the ReplicaSet's controller notices (via the control loop from Chapter 1) and creates a replacement — no restart script, no systemd `Restart=always` needed, because the reconciliation happens at the cluster level instead of the single-VM level.",
+        whyDevops:
+          "This is the direct, one-level-up successor to Module 1's `Restart=always` systemd unit and Module 6's Load Balancer health-probe-driven failover — same underlying goal (keep N healthy replicas running), now handled by the orchestrator instead of by a single VM's init system or an external LB.",
+        handsOn: [
+          { label: 'The real deployment used to prove the cluster works', code: 'kubectl create deployment hello-k3s --image=nginx:alpine --replicas=3\nkubectl scale deployment hello-k3s --replicas=4   # worked even with 1/3 nodes down\nkubectl delete deployment hello-k3s               # cleanup' },
+        ],
+        troubleshooting: [
+          'A Deployment shows the right replica count but pods keep restarting → check `kubectl describe pod <name>` for the actual failure reason (crash loop, failed image pull, resource limits) — the Deployment layer will keep replacing crashing pods forever without fixing the underlying cause, so the replica count alone can look healthy while the app is actually broken.',
+        ],
+        interview: [
+          'What\'s the actual relationship between a Deployment and a ReplicaSet — which one does the day-to-day replica-count enforcement?',
+          'How does a Deployment\'s self-healing differ from systemd\'s `Restart=always` in scope?',
+        ],
+        azureConnection:
+          'The exact object used to verify this cluster works for real, not just that `kubectl get nodes` looks healthy — three real replicas scheduled automatically, one per node, surviving a real node failure and still accepting a scale-up request afterward.',
+      },
+      {
+        id: 'services-service-discovery',
+        title: 'Services and service discovery',
+        concept:
+          "A Service gives a stable virtual IP and DNS name (via CoreDNS, already running in this cluster's `kube-system` namespace) to a group of pods selected by label — so callers never need to know individual pod IPs, which are ephemeral by design (Chapter 3). `ClusterIP` (default) is reachable only inside the cluster; `NodePort` opens a port on every node's own IP; `LoadBalancer` asks the cloud provider for an external load balancer — a feature that requires cloud integration AKS has and this self-managed cluster does not, which is exactly why k3s ships Traefik as a bundled Ingress controller instead (visible in this cluster as the `svclb-traefik` pods running on every node).",
+        whyDevops:
+          "This is the piece that replaces \"which port is this backend service actually listening on\" — a recurring theme since Module 4's Docker Compose service-name DNS, now at cluster scale instead of single-host scale.",
+        handsOn: [
+          { label: 'What\'s already running as a Service in this cluster', code: 'kubectl get svc -A\n# kube-system\'s coredns, and traefik\'s Service (backed by the svclb-traefik\n# daemonset pods visible in `kubectl get pods -A` on every node)' },
+        ],
+        troubleshooting: [
+          '`Service: type=LoadBalancer` stays stuck in `<pending>` forever on a self-managed cluster → this is expected without a cloud-controller-manager to actually provision a load balancer; k3s\'s bundled ServiceLB (the `svclb-*` pods) is its lightweight substitute, or use NodePort/Ingress directly.',
+        ],
+        interview: [
+          'Why does a Service exist at all, given pods already have their own IPs?',
+          'Why does `type=LoadBalancer` not work out of the box on a self-managed cluster the way it does on AKS?',
+        ],
+        azureConnection:
+          "This project's planned Ingress work (a later chapter) will front the cluster the same way `azureops-lb` + the ModSecurity WAF fronted `app-vm1`/`app-vm2` in Module 6 — conceptually the same job (get external traffic to the right backend), now handled by Kubernetes-native primitives (Service + Ingress) instead of an external Load Balancer.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [

@@ -1535,6 +1535,28 @@ export const modules: Module[] = [
         azureConnection:
           "This closes the loop on Module 7's stated goal — a repeatable build-test-scan-publish-verify pipeline — while honestly flagging what's still needed for a full rollout: Key Vault-backed secrets (Module 11) and a deliberate choice of always-on deployment target, both explicitly deferred rather than faked.",
       },
+      {
+        id: 'rollback-approvals',
+        title: 'Rollback, approvals, and deployment strategies',
+        concept:
+          "A GitHub Environment adds a named deployment target (e.g. `production`) that a job can require via `environment: production` — and, critically, protection rules attached to that environment (Required reviewers, wait timers) block the job from running at all until satisfied, regardless of what upstream jobs already passed. This is the concrete mechanism behind Continuous *Delivery* (automated up to a human decision point) versus Continuous *Deployment* (fully automated, no gate) — the distinction Chapter 1 introduced conceptually, now real. Rollback strategy, separately: because this project already tags every published image with both the immutable commit SHA and the mutable `latest` (Chapter 9), rolling back means redeploying a previous, known-good SHA-tagged image — `latest` alone can't express \"go back,\" only \"whatever's newest.\"",
+        whyDevops:
+          "An approval gate that silently doesn't gate anything is arguably worse than no gate at all — it creates false confidence. This chapter's real value came from discovering exactly that gap live (the environment existed, but `Required reviewers` was unchecked) rather than assuming a `environment:` reference alone was sufficient.",
+        handsOn: [
+          { label: 'What actually happened, in order', code: '# 1. Added `environment: production` to the deploy job -- ran, no approval prompt appeared\n# 2. Checked GitHub Settings -> Environments -> production directly\n#    -> "Required reviewers" checkbox was UNCHECKED -- environment existed,\n#       but had zero protection rules attached\n# 3. Checked it, added a reviewer, saved\n# 4. Re-ran -- this time: "consciouslake requested your review to deploy to\n#    production", deploy job sat at "waiting for review" for real\n# 5. Approved via the Review deployments button -- deploy then ran and succeeded' },
+        ],
+        troubleshooting: [
+          '`environment: production` is set on a job but no approval prompt ever appears → the environment may have been auto-created by GitHub the first time the workflow referenced it, with zero protection rules attached by default. Always verify directly in Settings -> Environments that `Required reviewers` is actually checked, rather than assuming the `environment:` key alone enforces anything.',
+          "Adding `environment:` to a job that already uses OIDC federation breaks `azure/login` with a new `AADSTS700213` subject-mismatch error → GitHub's OIDC subject claim format changes based on job context: without an environment it's `repo:owner/repo:ref:refs/heads/BRANCH`, but with one it becomes `repo:owner/repo:environment:NAME` instead — a second Federated Credential is needed for the environment-based subject; the ref-based one alone won't match anymore for that job.",
+        ],
+        interview: [
+          'What specifically enforces an approval gate in GitHub Actions — is it the `environment:` key alone, or something else?',
+          'Why does adding a GitHub Environment to a job change its OIDC subject claim format?',
+          'Why is tagging images with both a commit SHA and `latest` necessary for a real rollback strategy, when `latest` alone would be simpler?',
+        ],
+        azureConnection:
+          'Built and verified as a real, live sequence in this session: the `production` environment was created but initially had no protection rules (confirmed via the GitHub UI, not assumed), fixed by enabling Required reviewers, which then genuinely broke OIDC auth with a new subject-format mismatch (`...{:environment:production}` vs. the existing `...{:ref:refs/heads/main}` credential) — fixed with a second Federated Credential rather than replacing the first, so both job shapes keep working. The final real run showed a genuine pause (`waiting for review`), a real approval click, and `deploy` succeeding only after that human decision — the complete CD-with-a-gate loop, not just the YAML for one.',
+      },
     ],
   },
 ]

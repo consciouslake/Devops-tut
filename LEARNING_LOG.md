@@ -826,3 +826,49 @@ MSYS_NO_PATHCONV=1 az role assignment create \
 - A local `main` branch can silently fall behind `origin/main` between a PR merge and the next branch creation — always `git pull origin main` immediately before branching off it, not just after a merge notification; this caused a spurious "can't automatically merge" conflict on this very fix's first attempt, from cherry-picking onto a stale local main.
 
 **Confirmed:** PR #12 merged (run #57) — full pipeline green end to end (`backend`/`frontend` → `docker-build-scan` → `deploy`, 2m45s total), including `deploy` succeeding in 15s. `azure/login@v3` authenticated via OIDC with the corrected Federated Credential subject, zero stored secrets, and the real `az account show`/`az resource list` verification against `azureops-copilot-rg` went through. This is a genuinely working, fully automated build-test-scan-publish-verify pipeline — the actual goal stated at the start of Module 7 — not just syntactically plausible YAML.
+
+---
+
+## Module 7 — CI/CD, Chapter 11 (rollback/approvals) + MODULE 7 COMPLETE — 2026-09-21
+
+**Plan item(s):** Module 7, Chapter 11 — rollback, approvals, deployment strategies. Final chapter of Module 7.
+
+**What I did:**
+- Added `environment: production` to the `deploy` job in `ci.yml`, intending this to gate the job behind a manual approval (Continuous Delivery, not full Continuous Deployment — the distinction from Chapter 1, made real).
+- **Real bug #1**: the very next run failed `azure/login` with a *new* `AADSTS700213` error — adding `environment:` changed the OIDC subject claim GitHub issues, from `repo:...:ref:refs/heads/main` to `repo:...:environment:production`. The existing Federated Credential (ref-based) no longer matched this job. Fixed by adding a *second* Federated Credential for the environment-based subject, keeping the first one intact rather than replacing it, so both job shapes keep working.
+- **Real bug #2 (more interesting)**: even after fixing auth, the job ran straight through with no approval prompt at all. Asked the user to check GitHub Settings -> Environments -> production directly rather than assuming `environment: production` alone was sufficient — found the environment existed but **`Required reviewers` was unchecked**, meaning GitHub had auto-created the environment with zero protection rules the first time the workflow referenced it. This is a real, easy-to-miss gap: a security/process control that looks configured in code but silently does nothing without a separate UI step.
+- User checked `Required reviewers`, added themselves, saved. Next run showed a genuine pause: "consciouslake requested your review to deploy to production", `deploy` sitting at "waiting for review". User approved via the Review deployments button; `deploy` then ran and succeeded.
+- Wrote up rollback strategy conceptually (redeploy by immutable SHA tag, since `latest` alone can't express "go back") rather than demonstrating a full rollback, since `deploy` is still scoped to auth verification, not a real app rollout (consistent with Chapter 9's honest scoping).
+
+**Commands used:**
+```bash
+az ad app federated-credential create --id <appObjectId> --parameters '{
+  "name": "github-actions-production-environment",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:consciouslake@166535976/Devops-tut@1378577773:environment:production",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+az ad app federated-credential list --id <appObjectId> --query "[].{name:name, subject:subject}" -o table
+```
+
+**What broke / what I learned:**
+- GitHub's OIDC subject claim format depends on job context (plain ref vs. environment-scoped), not just the repo/branch — a Federated Credential written for one job shape doesn't automatically cover a job that adds an `environment:` key, even though it's "the same workflow, same branch."
+- `environment: NAME` referenced in a workflow, with no environment of that name pre-existing in the repo, gets auto-created by GitHub with **no protection rules** — the job runs exactly as if the environment key weren't there at all until someone explicitly configures rules in the UI. This is a real gap worth checking directly (Settings -> Environments) rather than trusting that referencing an environment name in YAML alone enforces anything.
+- Two real GitHub-side surprises in one small YAML change (subject format, silent no-op environment) reinforces the pattern from earlier in this module: real CI/CD runs are the only reliable ground truth, and a security control (an approval gate) deserves direct verification that it actually blocks something, not just that the config exists.
+
+**Cost check:** Zero new spend — GitHub Environments, Federated Credentials are all free.
+
+---
+
+# MODULE 7 — CI/CD WITH GITHUB ACTIONS: COMPLETE (2026-09-21)
+
+All 11 chapters done, a genuinely working pipeline, not just correct-looking YAML:
+- Reviewed and extended the real `ci.yml` from Module 2 throughout, rather than a disconnected example (Ch 1-6)
+- Real Trivy scanning found and fixed a real CRITICAL CVE + several HIGH in the backend; handled 37 base-image findings in the frontend via a differentiated, documented policy rather than a giant ignore list (Ch 7-8)
+- Chose GitHub Container Registry over Azure Container Registry after directly questioning whether ACR's advantages actually applied — saved ~$5/month (Ch 9)
+- Built real OIDC federation (App Registration, two Federated Credentials for two different job shapes, RBAC scoped to just the resource group) — zero stored secrets anywhere (Ch 10)
+- Built a real GitHub Environment approval gate, caught it silently not working, fixed it, watched a genuine "waiting for review" pause and manual approval (Ch 11)
+- Two real invented-tag CI failures caught and fixed from actual failed runs (`trivy-action`, `docker/login-action` versions verified via WebFetch after the first mistake)
+- One real stale-local-main mishap caught and recovered (twice) without losing any work
+
+Seven modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking, CI/CD.

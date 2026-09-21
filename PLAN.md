@@ -144,7 +144,7 @@ Five genuine bugs hit and fixed across the module (mangled probe path, redundant
 - **Ch 10**: real OIDC federation built (App Registration, Federated Credential scoped to `main` only, `Contributor` role on the RG — role assignment run by the user, same pattern as Module 5's RBAC moment). `deploy` job scoped deliberately to proving the passwordless auth works, not a full app rollout (Key Vault secrets management isn't in place until Module 11).
 - **Real CI failure caught and fixed**: an invented `trivy-action` version tag broke the actual GitHub Actions run — found via a real failed run, fixed by verifying real tags via `WebFetch` instead of guessing.
 
-Chapter 11 (rollback/approval strategies) remaining. Full chapter content for 1-10 in the frontend curriculum browser. See LEARNING_LOG.md "Module 7" for full chapter-by-chapter detail.
+**Confirmed working end to end**: after fixing a real Federated Credential subject mismatch (GitHub's actual OIDC subject includes numeric IDs after owner/repo, not the plain documented format), PR #12's merge ran the full pipeline green — `backend`/`frontend` → `docker-build-scan` → `deploy`, `azure/login` succeeding via OIDC with zero stored secrets. Chapter 11 (rollback/approval strategies) remaining. Full chapter content for 1-10 in the frontend curriculum browser. See LEARNING_LOG.md "Module 7" for full chapter-by-chapter detail.
 
 ### Module 8 — Kubernetes Fundamentals
 

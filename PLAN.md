@@ -26,6 +26,8 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** operate and troubleshoot a Linux server confidently.
 
+**Status (2026-09-21):** Done — VM created (`azureops-vm01`, southindia), Python app deployed as a systemd service (`pyapp.service`, `Restart=always`), self-healing verified (killed the process, watched systemd restart it via journalctl), NSG port-opening debugged end-to-end (curl worked locally but not externally until `az vm open-port` was run), core commands (chmod/chown/df/journalctl) practiced. Full chapter content written in the frontend curriculum browser. See LEARNING_LOG.md "Phase 1 — Linux fundamentals VM" for details.
+
 ### Module 2 — Git & GitHub
 
 1. Version control mental model

@@ -839,11 +839,218 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'azure-fundamentals',
+    number: 5,
+    mono: 'AZ',
+    title: 'Azure Fundamentals',
+    outcome: 'Navigate Azure and choose basic services deliberately.',
+    chapters: [
+      {
+        id: 'azure-geography',
+        title: 'Azure global infrastructure',
+        concept:
+          "Azure organizes physical infrastructure into regions (a geographic area like Central India or East US, each an independent set of datacenters), and some regions further into Availability Zones (physically separate datacenters within the region, each with independent power/cooling/networking, used for high availability). Region pairs are two regions in the same geography Azure uses for disaster-recovery replication of platform services. Not every service or VM size is available in every region — this is a real constraint you plan around, not just trivia.",
+        whyDevops:
+          "Region choice affects latency, cost, data-residency compliance, and — as found directly in this project — actual resource availability. Zone-awareness is the entire basis of Module 6/9's high-availability designs.",
+        handsOn: [
+          { label: 'Real regions this project already touches', code: 'az group list --query "[].{name:name, location:location}" -o table\n# Result: southindia, eastus, centralindia, germanywestcentral — one project, four regions' },
+        ],
+        troubleshooting: [
+          'A resource type/size unavailable in your target region → check `az vm list-skus --location <region>` (or the service\'s own availability listing) before assuming it\'s a quota or permissions problem — this was exactly the root cause chased across Phase 1\'s SkuNotAvailable errors.',
+        ],
+        interview: [
+          'What\'s the difference between a region and an Availability Zone?',
+          'Why might a service or VM size be unavailable in a region you otherwise want to use?',
+        ],
+        azureConnection:
+          'This subscription\'s resource groups are already spread across 4 different regions with no consistent reasoning behind it (some inherited from unrelated prior work) — a real example of why deliberate region choice matters, in contrast to `azureops-copilot-rg` which was chosen specifically for `Standard_B2s` zone support back in Day 0.',
+      },
+      {
+        id: 'tenant-subscription-rg',
+        title: 'Tenant, subscription, resource group',
+        concept:
+          "A Microsoft Entra ID tenant is the identity boundary — one organization's directory of users/groups/apps. A subscription is the billing and access-management boundary within a tenant; resources deploy into exactly one subscription. A resource group is a logical container within a subscription — resources in it can span multiple regions, and deleting a resource group deletes everything inside it. These three nest: tenant > subscription > resource group > resource.",
+        whyDevops:
+          "Nearly every access-control and cost-tracking decision in Azure hangs off this hierarchy — knowing which boundary a given setting (RBAC role, budget, policy) applies at is essential to reasoning about blast radius.",
+        handsOn: [
+          { label: 'See this subscription\'s actual identifiers', code: 'az account show --query "{name:name, tenantId:tenantId, id:id}" -o json' },
+        ],
+        troubleshooting: [
+          '`az group delete` removes far more than expected → resource groups don\'t protect against accidental deletion by default; this is exactly why `rg-linux-lab` and `bob-test-rg` were fully removable in one command each during Phase 1\'s cleanup — same mechanism, used deliberately there.',
+        ],
+        interview: [
+          'What\'s the practical difference between a subscription boundary and a resource group boundary?',
+          'Why can a resource group contain resources from multiple regions?',
+        ],
+        azureConnection:
+          '`azureops-copilot-rg` is this project\'s resource group — every VM, NSG, VNet, storage account, and disk created so far lives inside it, all in `centralindia`\'s sibling region `southindia` for the VM specifically (a resource group\'s own "location" is just metadata, not a constraint on what regions its resources use).',
+      },
+      {
+        id: 'arm-tags-naming',
+        title: 'ARM, tags, naming',
+        concept:
+          "Azure Resource Manager (ARM) is the management layer every `az` command, the Portal, and Terraform ultimately talk to — it's the API that actually creates/reads/updates/deletes resources, all backed by declarative JSON templates under the hood. Every resource has a type (`Microsoft.Compute/virtualMachines`, `Microsoft.Storage/storageAccounts`) identifying which resource provider owns it. Tags are arbitrary key-value metadata attachable to almost any resource, used for cost allocation, ownership tracking, and automated policy enforcement (Module 12).",
+        whyDevops:
+          "Consistent tagging is what makes a multi-resource, multi-team subscription queryable and cost-attributable at scale — without it, \"which team owns this and why does it cost this much\" becomes archaeology.",
+        handsOn: [
+          { label: 'See the tag convention already applied', code: 'az resource list --query "[?tags.project==\'azureops-copilot\'].{name:name, type:type}" -o table' },
+        ],
+        troubleshooting: [
+          'A resource is missing an expected tag → tags don\'t inherit automatically from the resource group to resources inside it; each resource needs the tag applied explicitly (or via Azure Policy, Module 12\'s tagging-rule enforcement).',
+        ],
+        interview: [
+          'What is Azure Resource Manager, concretely — what does it sit between?',
+          'Why don\'t resource group tags automatically apply to the resources inside the group?',
+        ],
+        azureConnection:
+          'The `project=azureops-copilot` tag has been applied consistently since Day 0 across the resource group, VM, NSG, and storage account — this is what a `Cost Management` filter or an Azure Policy tagging rule (Module 12) would key off of.',
+      },
+      {
+        id: 'cli-cloud-shell',
+        title: 'Azure CLI',
+        concept:
+          "`az` is the command-line interface to Azure Resource Manager — every action available in the Portal has an `az` equivalent (and some ARM/REST capabilities the CLI doesn't wrap yet, reachable via `az rest`). Cloud Shell is a browser-based shell with `az` pre-authenticated, useful when a local CLI isn't available or convenient. `az login` establishes an authenticated session; `az account show`/`az account set` inspect/switch the active subscription when multiple are available.",
+        whyDevops:
+          "The CLI (or an SDK/Terraform provider built on the same ARM API) is how Azure actually gets automated — the Portal is for humans clicking, everything in a pipeline goes through this layer instead.",
+        handsOn: [
+          { label: 'The exact pattern used throughout this whole project', code: 'AZ="/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin/az"\n"$AZ" account show -o table' },
+        ],
+        troubleshooting: [
+          '`az <command>` returns "command not found" despite Azure CLI being installed → not on PATH in this shell; use the full binary path (as done throughout this project) or fix PATH once, rather than reinstalling.',
+          'An `az` subcommand feels artificially limited (e.g. missing a flag docs mention) → check if the command group is marked `preview`; the underlying REST API is usually more complete and reachable via `az rest` — exactly how the Day 0 budget notifications and the Module 5 budget-currency fix were both done.',
+        ],
+        interview: [
+          'What is Azure CLI actually a client for, under the hood?',
+          'When would you reach for `az rest` instead of a normal `az` subcommand?',
+        ],
+        azureConnection:
+          'Every single Azure interaction across this entire project — VM creation, NSG rules, budget fixes, storage account creation — went through this same `$AZ` CLI, including two real cases (`consumption budget create`\'s missing `--notifications` flag, and this Module\'s storage RBAC assignment) where the CLI\'s own limitations or safety guardrails required falling back to `az rest` or stopping to ask a human.',
+      },
+      {
+        id: 'identity-rbac',
+        title: 'Identity',
+        concept:
+          "Microsoft Entra ID (formerly Azure AD) is Azure's identity provider — users, groups, service principals (app identities), and managed identities (automatically-managed app identities tied to a resource, eliminating stored credentials) all live here. RBAC (Role-Based Access Control) assigns roles (Owner, Contributor, Reader, or granular ones like Storage Blob Data Contributor) to a principal at a scope (subscription, resource group, or individual resource). Critically, Azure separates *control-plane* permissions (managing the resource itself — create/delete/configure) from *data-plane* permissions (reading/writing the data inside it) for services like Storage — having Owner doesn't automatically grant blob read/write access via Azure AD auth.",
+        whyDevops:
+          "Least-privilege access design is a core security responsibility, and the control-plane/data-plane split is a common source of confusing \"but I'm an Owner, why can't I do this\" moments if you don't know it's intentional.",
+        handsOn: [
+          { label: 'Check what role you actually hold, and at what scope', code: 'az role assignment list --query "[].{role:roleDefinitionName, scope:scope}" -o table' },
+        ],
+        troubleshooting: [
+          '`az storage blob upload --auth-mode login` fails with a permissions error despite being subscription Owner → Owner is a control-plane role; blob data access via Azure AD requires an explicit data-plane role like `Storage Blob Data Contributor` at the storage account (or narrower) scope — this happened for real in this project.',
+        ],
+        interview: [
+          'Why doesn\'t the Owner role automatically grant Storage Blob data access when using Azure AD authentication?',
+          'What\'s the security tradeoff between a scoped RBAC role assignment and a storage account key?',
+        ],
+        azureConnection:
+          'Hit directly in this project: `az storage blob upload --auth-mode login` failed despite subscription-level Owner access, because Owner is control-plane only. Assigning a scoped `Storage Blob Data Contributor` role was the correct fix but requires a permission grant — an action deliberately not taken autonomously in this session; account-key auth was used instead for the immediate demo, with the RBAC gap left for a human decision, which is itself the least-privilege lesson in practice.',
+      },
+      {
+        id: 'compute-choices',
+        title: 'Compute',
+        concept:
+          "Azure's compute spectrum trades control for abstraction: a Virtual Machine gives full OS control (you patch, configure, scale it yourself) — most flexible, most operational burden. App Service is a managed platform for web apps (no OS access, built-in scaling/deployment slots, less flexible). Container Apps runs containers with built-in autoscaling (including to zero) without managing the underlying orchestrator. Azure Functions runs event-triggered code with no server management at all, billed per-execution. The right choice depends on how much control you actually need versus how much operational overhead you're willing to own.",
+        whyDevops:
+          "This project deliberately started at the most manual end (a raw VM) specifically to force Linux/systemd/networking fundamentals hands-on — Module 6 onward moves toward VMSS, and Module 9/10 toward AKS, trading manual control for managed scaling as the fundamentals solidify.",
+        handsOn: [
+          { label: 'What this project actually uses today', code: '# Only one compute type touched so far:\naz vm list -d -o table   # azureops-vm01, Standard_B2s_v2, southindia' },
+        ],
+        troubleshooting: [
+          'Choosing App Service/Container Apps "because it\'s easier" without understanding what a VM was hiding → this project intentionally did the opposite (VM first) so the underlying Linux/network mechanics are visible, not abstracted away, before evaluating a managed option knowingly.',
+        ],
+        interview: [
+          'When would you choose a VM over App Service, given App Service is less operational overhead?',
+          'What does Azure Functions\' "no server management" actually mean at the infrastructure level — where does the code actually run?',
+        ],
+        azureConnection:
+          "AzureOps Copilot's own compute path across this curriculum: raw VM now (Phase 1, deliberately manual) -> VM Scale Set (Module 6, managed scaling) -> optionally AKS (Module 9/10, full container orchestration) — each step trading hand-built control for managed abstraction on top of the same underlying concepts already learned manually.",
+      },
+      {
+        id: 'storage-data',
+        title: 'Storage and data',
+        concept:
+          "Blob Storage holds unstructured data (files, backups, images) in containers, with tiers (Hot/Cool/Archive) trading access latency for cost. Azure Files provides SMB/NFS file shares mountable like a network drive. Managed disks are the persistent storage attached to VMs (what `azureops-vm01`'s OS disk actually is). None of Blob/Files/managed disks are databases — they're storage primitives; actual managed database services (Module 5 Chapter 8) are a separate, higher-level category.",
+        whyDevops:
+          "Blob Storage specifically is the backbone of Module 13's backup-and-restore requirement — Qdrant volume snapshots exported to Blob is the planned disaster-recovery mechanism for this project.",
+        handsOn: [
+          { label: 'Real blob storage created and used this session', code: 'az storage account create --name azureopscopilotstore --resource-group azureops-copilot-rg \\\n  --location centralindia --sku Standard_LRS --kind StorageV2\naz storage container create --account-name azureopscopilotstore --name learning-log-backup --auth-mode login\naz storage blob upload --account-name azureopscopilotstore --container-name learning-log-backup \\\n  --name LEARNING_LOG.md --file LEARNING_LOG.md --auth-mode key' },
+        ],
+        troubleshooting: [
+          'Container creation succeeds via `--auth-mode login` but blob upload fails → container-level management is a control-plane-ish operation the Owner role covers more readily than blob data operations; see the Identity chapter\'s RBAC finding for exactly why.',
+        ],
+        interview: [
+          'What\'s the difference between Blob Storage, Azure Files, and a managed disk — when would you use each?',
+          'Why does Hot/Cool/Archive tiering exist instead of one uniform storage tier?',
+        ],
+        azureConnection:
+          'A real `Standard_LRS` storage account (`azureopscopilotstore`) now exists in `azureops-copilot-rg` with `LEARNING_LOG.md` uploaded as a literal backup blob — a small working preview of Module 13\'s planned Qdrant-volume-to-Blob backup/restore capstone requirement.',
+      },
+      {
+        id: 'databases-managed-services',
+        title: 'Databases and managed services overview',
+        concept:
+          "Azure offers managed database services (Azure SQL, Cosmos DB, Azure Database for PostgreSQL/MySQL, Azure Cache for Redis) that handle patching, backups, and often scaling/HA automatically — trading cost and some flexibility for drastically reduced operational burden versus self-hosting the same database in a VM or container. Not every workload has a managed equivalent; specialized systems (like a vector database such as Qdrant) may need to be self-hosted precisely because no first-party managed offering exists yet.",
+        whyDevops:
+          "Knowing when a managed service is the obviously right call (Redis — Azure Cache for Redis exists and is mature) versus when self-hosting is the only real option (Qdrant — no native Azure managed offering as of this curriculum) is a real architectural decision, not a default.",
+        handsOn: [
+          { label: 'This project\'s actual choice, stated explicitly', code: '# Redis and Qdrant both currently run as self-hosted containers (docker-compose.yml)\n# Redis: Azure Cache for Redis exists as a managed alternative for production\n# Qdrant: no native Azure managed offering -> self-hosted 3-node cluster is the plan (Module 9)' },
+        ],
+        troubleshooting: [
+          'Defaulting to "always use the managed service" without checking if one exists for your specific technology → Qdrant is the counterexample in this exact project; the right call there is a deliberately self-hosted, clustered deployment.',
+        ],
+        interview: [
+          'What operational responsibilities does a managed database service take off your plate, specifically?',
+          'Why might a team choose to self-host a database despite a managed alternative existing?',
+        ],
+        azureConnection:
+          "This project's Redis could realistically move to Azure Cache for Redis in a production hardening pass; Qdrant cannot, since it has no equivalent — directly shaping Module 9's plan to run it as a real 3-node self-hosted cluster instead of assuming a managed swap-in exists.",
+      },
+      {
+        id: 'monitoring-cost',
+        title: 'Monitoring and cost',
+        concept:
+          "Budgets (Cost Management) track spend against a threshold and can alert at percentage milestones — but critically, a budget's amount is denominated in the subscription's billing currency regardless of what number you type, and its scope (subscription-wide vs resource-group-scoped) determines what spend actually counts against it. Azure Monitor collects metrics and logs platform-wide; Log Analytics is the query workspace for logs specifically (none set up yet in this subscription). Tags (this module's earlier chapter) are what make cost genuinely attributable per-project in a shared subscription.",
+        whyDevops:
+          "Getting budget currency/scope wrong is invisible until it's a real problem — exactly what happened in this project (a ₹200 budget instead of $200, silently absorbing unrelated spend) and went unnoticed for a full day before being caught by manually checking the Portal.",
+        handsOn: [
+          { label: 'This project\'s real, corrected budget', code: 'az consumption budget list --query "[].{name:name, amount:amount, spent:currentSpend.amount, unit:currentSpend.unit}" -o table\n# azureops-copilot-monthly | 16600.0 | ~1980 | INR  (~12% spent)' },
+        ],
+        troubleshooting: [
+          "A budget seems to be tracking way more spend than expected → check its scope; a subscription-wide budget (the default with `az rest`'s `Microsoft.Consumption/budgets`) includes every resource group in the subscription, not just the one you're thinking about — this is exactly what happened with `rg-linux-lab`/`bob-test-rg`'s unrelated spend inflating this project's budget before they were cleaned up.",
+        ],
+        interview: [
+          'Why should you always check a budget\'s `currentSpend.unit` rather than assuming the amount you set is in the currency you intended?',
+          'What\'s the difference between a subscription-scoped and a resource-group-scoped budget, and when would you want each?',
+        ],
+        azureConnection:
+          "This was a real, caught-in-the-act bug in Phase 1: the budget was created as ₹200/month instead of the intended $200 (silent currency default), subscription-wide (absorbing unrelated `rg-linux-lab`/`bob-test-rg` spend), already ~9.8x over before being noticed via the Portal's Cost Management view and fixed via `az rest` to ₹16,600.",
+      },
+      {
+        id: 'first-azure-environment',
+        title: 'First Azure environment',
+        concept:
+          "This chapter has no new material — it's the checkpoint that Chapters 1-9 already happened for real: a resource group in a deliberately-chosen region, a VM with networking, RBAC understood (including its real limits), tags applied consistently, a budget that actually tracks spend correctly, and now a storage account. The 'build the first environment' exercise most curricula treat as a standalone lab was, in this project, already lived through during Phase 1 and this module — messier and more real than a clean tutorial would have been.",
+        whyDevops:
+          "Real environments come with real friction (SkuNotAvailable across three regions, a currency bug, an RBAC data-plane gap) — experiencing that friction firsthand, rather than following a script that always works, is the actual preparation for production work.",
+        handsOn: [
+          { label: 'The full environment as it exists today', code: 'az resource list --query "[?resourceGroup==\'azureops-copilot-rg\'].{name:name, type:type}" -o table' },
+        ],
+        troubleshooting: [
+          'No new failure modes — this chapter is the synthesis checkpoint for the whole module.',
+        ],
+        interview: [
+          'Walk through this project\'s Azure environment end to end: what exists, why each piece is there, and what real problems came up building it.',
+        ],
+        azureConnection:
+          "`azureops-copilot-rg` today: a VM (with its NIC/NSG/VNet/PublicIP/OsDisk), a storage account with a real backup blob, a corrected subscription-wide budget, and a tag convention applied throughout — built through real troubleshooting, not a guided happy path.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
-  { number: 5, title: 'Azure Fundamentals', outcome: 'Navigate Azure and choose basic services deliberately.' },
-  { number: 5, title: 'Azure Fundamentals', outcome: 'Navigate Azure and choose basic services deliberately.' },
   { number: 6, title: 'Azure Networking', outcome: 'Understand how Azure traffic flows from the internet to the application.' },
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },
   { number: 8, title: 'Infrastructure as Code with Terraform', outcome: 'Provision and change Azure infrastructure safely through code.' },

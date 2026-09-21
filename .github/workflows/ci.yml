@@ -118,3 +118,29 @@ jobs:
           docker push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           docker tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
           docker push ${{ env.FRONTEND_IMAGE }}:latest
+
+  # OIDC-authenticated Azure login -- no stored client secret anywhere. The
+  # App Registration (azureops-copilot-github-oidc) has a Federated Identity
+  # Credential trusting ONLY repo:consciouslake/Devops-tut:ref:refs/heads/main,
+  # so this token exchange only works from this exact repo's main branch,
+  # not from a fork or any other branch. Scope deliberately kept to proving
+  # the passwordless auth genuinely works -- see PLAN.md/LEARNING_LOG.md
+  # Module 7 Chapter 10 for why an actual deployment target wasn't added yet.
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker-build-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify passwordless auth against real Azure resources
+        run: |
+          az account show --query "{subscription:name, user:user.name, authType:user.type}" -o table
+          az resource list --resource-group azureops-copilot-rg --query "sort_by([], &name)[].{name:name, type:type}" -o table

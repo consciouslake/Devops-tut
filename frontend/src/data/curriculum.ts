@@ -1469,6 +1469,28 @@ export const modules: Module[] = [
         azureConnection:
           "This triage judgment is exactly what a human still needs to bring to CI/CD even with everything automated — the pipeline can find and block on issues, but deciding whether a given finding is fix-now, accept-with-reason, or policy-adjust is not (yet) something to automate away, the same principle behind this project declining to auto-assign IAM roles back in Module 5.",
       },
+      {
+        id: 'push-container-registry',
+        title: 'Push to a container registry — Azure Container Registry vs. GitHub Container Registry',
+        concept:
+          "A container registry stores built images by `repository:tag`, so a deployment target can `docker pull` a specific version rather than needing the source code and a build environment. Azure Container Registry (ACR) is Azure's managed option (~$5/month Basic tier); GitHub Container Registry (`ghcr.io`), part of GitHub Packages, is free for the volumes a small project needs and authenticates in CI with the built-in `GITHUB_TOKEN` — no separate credential or OIDC setup required just to push. ACR's real, genuine advantages are Private Endpoint support (images pulled entirely inside a VNet, no internet egress) and native Managed Identity integration for passwordless pulls — both particularly strong once running on AKS. Neither advantage is in use yet: this project's VMs already pull images over the public internet regardless (that's how the Module 6 WAF containers came from Docker Hub), so ACR's private-pull benefit isn't being exercised today.",
+        whyDevops:
+          "This is a real, recurring build-vs-buy decision, same shape as Chapter 5's Load Balancer and Chapter 7's WAF choices from Module 6 — the cloud-native managed option isn't automatically correct just because it's cloud-native; it's correct once its specific advantages are actually needed.",
+        handsOn: [
+          { label: 'The real job, publishing only on merges to main (not every PR)', code: "docker-build-scan:\n  permissions:\n    packages: write   # <- grants GITHUB_TOKEN push access, no separate secret\n  env:\n    BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/azureops-backend\n  steps:\n    - uses: docker/login-action@v3\n      if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n      with:\n        registry: ghcr.io\n        username: ${{ github.actor }}\n        password: ${{ secrets.GITHUB_TOKEN }}\n    - run: docker push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}\n      if: github.event_name == 'push' && github.ref == 'refs/heads/main'" },
+        ],
+        troubleshooting: [
+          "Image push fails with a 403/denied error → check the job's `permissions: packages: write` is actually set; without it, the default `GITHUB_TOKEN` only has read access to packages, and login will appear to succeed while push fails.",
+          'A pull request run tries to push an image → the `if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'` guard on every publish-related step is what prevents this; PRs still get full build+scan validation, just never a real publish — the same "validate everything, publish only from main" distinction this project has now applied consistently since Chapter 1\'s CI-vs-CD framing.',
+        ],
+        interview: [
+          'What are ACR\'s actual, specific advantages over ghcr.io — not just "it\'s the Azure one"?',
+          'Why guard image-push steps on both event type AND branch, rather than branch alone?',
+          'How does GITHUB_TOKEN authenticate to ghcr.io without a separately configured secret?',
+        ],
+        azureConnection:
+          'A real cost-conscious decision made this session: asked directly why pay for ACR when GitHub already hosts the code, worked through the actual tradeoff (Private Endpoint + Managed Identity integration vs. $0 cost and simpler auth), and chose `ghcr.io` since neither of ACR\'s real advantages apply to this project\'s architecture yet. Tracked as a revisit point for when Module 9 (AKS) actually needs private-network image pulls — the same "defer until the architecture justifies it" pattern as the Load Balancer and Front Door decisions in Module 6.',
+      },
     ],
   },
 ]

@@ -727,3 +727,28 @@ curl localhost:8000/health     # {"status":"UP"}
 - Differentiating a security gate's severity threshold by image/package category (application code vs. base-image OS packages) is legitimate, standard practice — not a workaround — once a per-CVE ignore list would grow large enough to lose its signal value.
 
 **Cost check:** No new spend — pure CI/Docker/security work, no Azure resources touched.
+
+---
+
+## Module 7 — CI/CD, Chapter 9 (registry choice: ghcr.io instead of ACR) — 2026-09-21
+
+**Plan item(s):** Module 7, Chapter 9 — push images to a container registry. Original plan assumed Azure Container Registry; redirected after a direct cost question.
+
+**What I did:**
+- User asked directly: why pay for Azure Container Registry (~$5/month) when GitHub already hosts the code? Worked through the real distinction — GitHub hosts source code, not built container images, so *some* registry is genuinely needed, but it doesn't have to be Azure's.
+- Laid out the real tradeoff: ACR's genuine advantages are Private Endpoint support (images pulled entirely inside a VNet) and native Managed Identity integration (passwordless pulls, strong on AKS) — neither is exercised by this project's current architecture, since `app-vm1`/`app-vm2` already pull images over the public internet regardless (proven in Module 6 when the WAF containers came from Docker Hub the same way).
+- Chose **GitHub Container Registry (`ghcr.io`)** instead — zero cost, and simpler CI auth (the built-in `GITHUB_TOKEN` with `packages: write` permission, no OIDC federation needed just to push, unlike ACR which would need Chapter 10's OIDC work done first).
+- Extended `docker-build-scan` in `ci.yml`: after the Trivy scans pass, both images get pushed to `ghcr.io` — but only `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`, so pull requests still get full build+scan validation without ever publishing an image. Tagged with both the commit SHA and `latest`.
+- Tracked ACR as a real revisit point for Module 9 (AKS) rather than dismissing it outright — private-network image pulls become a much stronger argument once actually running on AKS with network policy in place.
+
+**Commands used:**
+```bash
+python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"   # syntax validation only --
+# the actual push steps only run on a real merge to main, not on this feature branch
+```
+
+**What broke / what I learned:**
+- Nothing broke technically — this chapter was pure architecture decision-making, the same "does the managed Azure product's specific advantage actually apply to what we've built" question asked repeatedly through Module 6 (Load Balancer, WAF, Front Door), now applied to Module 7's registry choice too.
+- GitHub Actions' default `GITHUB_TOKEN` needs an explicit `permissions: packages: write` block at the job level to push to `ghcr.io` — without it, the token defaults to read-only package access and login succeeds while push silently fails to authorize.
+
+**Cost check:** Zero new spend — chose the free option deliberately, after comparing it honestly against the paid one rather than assuming the paid one was required.

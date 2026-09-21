@@ -289,3 +289,37 @@ az storage blob upload --account-name azureopscopilotstore --container-name lear
 - A local AI agent correctly refuses to self-assign IAM/RBAC roles autonomously (permission-grant actions are treated as requiring human judgment) — the right way to unblock in the moment was a weaker but functional workaround (account-key auth), leaving the proper least-privilege fix (scoped role assignment) for a human to explicitly approve.
 
 **Cost check:** New resource: `azureopscopilotstore` (Standard_LRS storage account) — cost is usage-based and negligible at this scale (a few KB uploaded), but it is a new persistent resource in the subscription going forward, unlike the module's other pure-CLI-query work.
+
+---
+
+## Follow-up — RBAC fix completed + PATH fixed for good — 2026-09-21
+
+**Plan item(s):** Close out Module 5's open RBAC gap; fix the recurring `az` PATH issue from Day 0.
+
+**What I did:**
+- User ran the `Storage Blob Data Contributor` role assignment themselves (the action this session correctly declined to do autonomously). Hit two of their own real snags first: pasted a literal `<your-object-id>` placeholder (bash tried to redirect into a nonexistent file), then hit `az: command not found` since PATH still wasn't fixed at that point.
+- Fixed the `az` PATH issue permanently: added the Azure CLI directory to `~/.bashrc`, then discovered this shell environment reads `~/.bash_profile` (login shell) rather than `~/.bashrc` for non-interactive tool invocations, and no `.bash_profile` existed — created one that sources `.bashrc`, the standard convention. Confirmed `az account show` works with the bare command afterward.
+- Once the role assignment succeeded, verified it actually took effect: `az storage blob list --auth-mode login` (the same call that failed with a permissions error earlier in Module 5) now succeeds and lists the real blob — Azure AD role propagation was fast (working within seconds, not the "up to a few minutes" typically expected).
+
+**Commands used:**
+```bash
+# PATH fix
+echo 'export PATH="$PATH:/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"' >> ~/.bashrc
+echo 'if [ -f ~/.bashrc ]; then source ~/.bashrc; fi' > ~/.bash_profile
+
+# RBAC fix (run by the user directly)
+az role assignment create \
+  --assignee-object-id 8e604a2d-9c01-4879-beca-e681dcf1c808 \
+  --assignee-principal-type User \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/f4646a65-5a1b-42f0-b7ba-8545aab5d02b/resourceGroups/azureops-copilot-rg/providers/Microsoft.Storage/storageAccounts/azureopscopilotstore"
+
+# Verification
+az storage blob list --account-name azureopscopilotstore --container-name learning-log-backup --auth-mode login -o table
+```
+
+**What broke / what I learned:**
+- Bash/Git Bash reads different profile files depending on how it's invoked: `~/.bashrc` for interactive non-login shells, `~/.bash_profile`/`~/.profile` for login shells — a PATH export in the wrong one silently doesn't apply in some contexts (like this session's own tool-driven shell invocations) even though it looks correct.
+- `MSYS_NO_PATHCONV=1` matters for `az role assignment` commands too, not just `docker run` — any command with an absolute-looking argument starting with `/` (like `/subscriptions/...` scopes) is vulnerable to Git Bash's automatic Windows-path translation.
+
+**Cost check:** No new spend — this was pure IAM/shell-config work.

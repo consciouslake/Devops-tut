@@ -59,6 +59,8 @@ This is the source of truth for the learning path. The goal is to go from DevOps
 
 **Outcome:** understand the traffic path before learning Azure networking.
 
+**Status (2026-09-21):** Chapters 1-9 done — real DNS lookup, TLS handshake/HTTP trace, and hop-by-hop traceroute run against github.com; NSG rules from Phase 1 re-read through the firewall/stateful-filtering lens; `docker-compose.yml`'s bind-address split (0.0.0.0 for frontend/backend, 127.0.0.1 for Redis/Qdrant) used as a live public-vs-private example; nginx.conf's reverse proxy config used for the load-balancing/reverse-proxy chapter. Chapter 10 (dedicated from-scratch VNet/subnet/NSG lab) deliberately deferred to Module 6 rather than duplicated here — Phase 1 already exercised NSG debugging in a real scenario. Full chapter content written in the frontend curriculum browser. See LEARNING_LOG.md "Module 3 — Networking Fundamentals" for details.
+
 ### Module 4 — Docker
 
 1. Why containers exist

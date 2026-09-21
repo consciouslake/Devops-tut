@@ -1274,6 +1274,31 @@ export const modules: Module[] = [
         azureConnection:
           "This project's own decision history is the real example: Chapter 5 evaluated managed vs. software load balancing and chose to keep the managed option for comparison; Chapter 7 evaluated managed vs. software WAF and chose software (zero extra cost, reused existing VMs); this chapter evaluated Front Door vs. its alternatives and chose to build nothing yet, since the project doesn't have the multi-region architecture that would justify it — three different real cost/architecture decisions, three different honest outcomes, all logged rather than defaulting to \"use the managed Azure product\" every time.",
       },
+      {
+        id: 'network-architecture-lab',
+        title: 'Design and troubleshoot the AzureOps network',
+        concept:
+          "The complete real network built across this module: `azureops-vnet` (10.10.0.0/16) with two subnets — `app-subnet` (10.10.1.0/24, holding `app-vm1`/`app-vm2`, protected by `app-subnet-nsg`) and `gateway-subnet` (10.10.2.0/24, intentionally NSG-less, holding the Private Link endpoint to `azureopscopilotstore`). Traffic path for a real request: internet -> `azureops-lb` (public IP, health-probes port 8080) -> NSG on `app-subnet` (must allow both the probe from `AzureLoadBalancer` AND real traffic from `Internet`, two separate rules) -> the WAF container (`owasp/modsecurity-crs`, ModSecurity inspection) -> the Python app on `localhost:8000`. A separate, unattached route table (`azureops-rt`) and a public DNS zone (`azureops-lab.test`) exist alongside this, deliberately decoupled from the live traffic path and the real `devopspk.online` domain respectively.",
+        whyDevops:
+          "Being able to describe a network's complete traffic path from memory, and diagnose a live failure within it methodically, is the actual skill this whole module built toward — everything before this chapter was building the pieces; this chapter is proving they're understood as a system.",
+        handsOn: [
+          {
+            label: 'A real, live troubleshooting lab run in this session — not hypothetical',
+            code: "# broke it deliberately:\naz network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Deny\n\n# diagnosed step by step, cheapest/most-isolating test first:\n# 1. is the app itself healthy? (bypasses ALL network layers)\naz vm run-command invoke -n app-vm1 --scripts \"curl -s -o /dev/null -w 'HTTP %{http_code}\\n' http://localhost:8080\"\n# -> HTTP 200 -- app is fine, problem is somewhere in the network path\n\n# 2. check the NSG rules for anything unexpected\naz network nsg rule list --nsg-name app-subnet-nsg --query \"sort_by([], &priority)\" -o table\n# -> Allow-Internet-8080 showed Deny -- found it\n\n# fixed it and confirmed recovery:\naz network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Allow",
+          },
+        ],
+        troubleshooting: [
+          'The Load Balancer never reported the backend as unhealthy despite real traffic being completely blocked → because `Allow-LB-Probe-8080` (source `AzureLoadBalancer`) was untouched, only `Allow-Internet-8080` (source `Internet`) was broken — the probe and real client traffic are genuinely independent paths through the NSG, so a healthy probe status tells you nothing about whether real users can actually reach the backend.',
+          'General lab methodology used here, worth internalizing as a default sequence: test the narrowest, most isolated thing first (app health, bypassing network entirely) before widening scope (NSG, then LB, then DNS) — this rules out entire categories of cause in one cheap step instead of guessing broadly.',
+        ],
+        interview: [
+          'Describe this network\'s complete request path from the public internet to the application, including every point traffic could be silently dropped.',
+          'Why did the Load Balancer keep sending traffic to a backend that was actually unreachable to real users?',
+          'What\'s your first diagnostic step when "the app is down," and why that one first?',
+        ],
+        azureConnection:
+          'A real deliberate failure was injected into `app-subnet-nsg` this session (`Allow-Internet-8080` flipped to Deny), confirmed via the browser (`ERR_TIMED_OUT`) and `curl`, diagnosed correctly in two steps (app-health check ruled out the application layer, NSG rule listing found the actual cause), fixed, and recovery confirmed with a real request returning `Hello from app-vm2` through the full WAF-protected path again — the complete lifecycle of a real incident, run end-to-end in a safe, reversible environment.',
+      },
     ],
   },
 ]

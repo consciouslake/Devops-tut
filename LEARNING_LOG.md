@@ -594,3 +594,59 @@ az network dns record-set list -g azureops-copilot-rg -z azureops-lab.test --que
 - Cloudflare's free tier, despite being the "cost-conscious" choice by cost alone, still has a real-world consequence (DNS delegation of an actual domain) that a throwaway resource (like Chapter 8's `.test` zone) doesn't — cost isn't the only axis that matters when deciding whether to build something for real versus conceptually.
 
 **Cost check:** Zero new spend this chapter — the most cost-conscious possible outcome, achieved by recognizing the infrastructure wasn't needed yet rather than by finding a cheaper way to build it anyway.
+
+---
+
+## Module 6 — Azure Networking, Chapter 10 (network architecture lab) — 2026-09-21, MODULE 6 COMPLETE
+
+**Plan item(s):** Module 6, Chapter 10 — design and troubleshoot the complete AzureOps network. Final chapter of Module 6.
+
+**What I did:**
+- Documented the complete real network topology as actually built across Chapters 1-9: `azureops-vnet` (10.10.0.0/16), `app-subnet` (10.10.1.0/24, NSG-protected, holding `app-vm1`/`app-vm2`) and `gateway-subnet` (10.10.2.0/24, intentionally NSG-less, holding the Private Link endpoint), and the full real request path (internet -> LB -> NSG -> WAF container -> app).
+- Ran a real, live troubleshooting lab rather than a hypothetical one: deliberately changed `Allow-Internet-8080` from Allow to Deny, confirmed the break via the actual browser (`ERR_TIMED_OUT` on the LB's public IP) and `curl`.
+- Guided diagnosis using the narrowest-first methodology from Module 3: checked app health directly on the VM first (bypassing the network entirely) — got `HTTP 200`, ruling out the application/WAF layer — then checked NSG rules and found `Allow-Internet-8080` set to Deny.
+- Important finding surfaced during diagnosis: the Load Balancer's own health probe (`Allow-LB-Probe-8080`, source `AzureLoadBalancer`) was untouched and still passing, so the LB never reported the backend as unhealthy despite real traffic being completely blocked — the probe path and the real-traffic path are genuinely independent through the NSG, and a healthy probe status proves nothing about real reachability. Same lesson as Chapter 5, now demonstrated as a live incident rather than discovered while building.
+- Fixed the rule, confirmed full recovery through the real public path: `HTTP 200`, `Hello from app-vm2`, response headers showing it passed through nginx (the WAF layer) correctly.
+- Wrote up the complete architecture and the lab as Chapter 10's content — the last chapter of Module 6.
+
+**Commands used:**
+```bash
+# Break
+az network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Deny
+
+# Diagnose -- narrowest/most isolated test first
+az vm run-command invoke -n app-vm1 --scripts "curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://localhost:8080"
+# -> HTTP 200 (app fine)
+az network nsg rule list --nsg-name app-subnet-nsg --query "sort_by([], &priority)" -o table
+# -> Allow-Internet-8080: Deny (found it)
+
+# Fix
+az network nsg rule update --nsg-name app-subnet-nsg --name Allow-Internet-8080 --access Allow
+
+# Confirm recovery
+curl -v http://135.235.240.52 --max-time 10
+# -> HTTP 200, "Hello from app-vm2", Server: nginx
+```
+
+**What broke / what I learned:**
+- Confirmed directly (not just theorized) that a Load Balancer's health probe status and real client-traffic reachability are independently gated by NSG rules — the probe rule and the internet-traffic rule are two separate allow/deny decisions, and breaking only one produces a "backend reports healthy, users can't reach it" state that would be genuinely confusing without knowing to check both.
+- The most efficient diagnostic sequence for "is it the app or the network" is to test the app in complete isolation first (localhost on the VM itself) before touching anything network-related — this single step ruled out an entire category of possible causes immediately.
+
+**Cost check:** No new spend — pure diagnostic/NSG work, fully reversible, zero resources created or destroyed.
+
+---
+
+# MODULE 6 — AZURE NETWORKING: COMPLETE (2026-09-21)
+
+All 10 chapters done, all built and verified for real:
+- Real VNet/NSG/routing built from scratch (Ch 1-4)
+- Real Load Balancer with verified failover (Ch 5) — three genuine bugs found and fixed live
+- Real Private Link with public access disabled and verified from both sides (Ch 6)
+- Real software WAF chosen over Azure Application Gateway for cost reasons, verified blocking a live SQLi payload end-to-end (Ch 7)
+- Real public DNS zone, verified via direct nameserver query, without touching the reserved production domain (Ch 8)
+- Front Door deliberately NOT built — evaluated honestly against real alternatives and real cost figures, chose not to build infrastructure the project doesn't need yet (Ch 9)
+- A complete, real, live troubleshooting incident — broken, diagnosed, and fixed (Ch 10)
+
+Two deferred decisions tracked for later modules: `devopspk.online` + Front Door (Module 13), and the managed-vs-software Load Balancer final call (Module 9, alongside the Qdrant cluster).
+
+Six modules of the 13-module roadmap now complete: Linux, Git, Networking, Docker, Azure Fundamentals, Azure Networking.

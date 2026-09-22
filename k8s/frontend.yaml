@@ -4,7 +4,7 @@ metadata:
   name: frontend
   namespace: azureops-copilot
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: { app: frontend }
   template:
@@ -16,6 +16,12 @@ spec:
         image: ghcr.io/consciouslake/azureops-frontend:latest
         ports:
         - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service

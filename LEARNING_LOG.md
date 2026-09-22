@@ -1671,3 +1671,34 @@ curl https://devopspk.online/health    # {"status":"UP"}
 - The value of documenting an over-permission instead of reflexively tightening it (Module 11) paid off directly here — no new role assignment, no new credential, no waiting on a human to run one, because the existing identity already had exactly the access this real automation needed.
 
 **Cost check:** $0 — reuses the existing OIDC identity and the existing `az vm run-command` pattern already used throughout this project; no new Azure resource, role, or credential.
+
+## Real load balancing verified on live traffic — 2026-09-22
+
+**Plan item(s):** User asked what the usual practice is for replica counts, then asked to actually scale up and verify load balancing on the real app, and update the relevant curriculum modules afterward.
+
+**What I did:**
+- Explained the real tradeoff first (stateless request-serving components like `backend`/`frontend` typically run 2+ replicas for rolling-update and pod-crash resilience; stateful singletons like `qdrant` normally don't without real clustering config, which wasn't built here) before touching anything.
+- Scaled `k8s/backend.yaml` and `k8s/frontend.yaml` from `replicas: 1` to `replicas: 2`, and added a `readinessProbe` to `frontend` (it didn't have one), applied both to the live cluster.
+- Checked where the new pods actually landed rather than assuming even distribution: both `backend` replicas ended up on `app-vm1` — a real, direct consequence of its `nodeSelector: kubernetes.io/hostname: app-vm1` constraint (needed for Key Vault Managed Identity access, Module 11), meaning `backend` is resilient to a pod crash but *not* to that specific node going down. `frontend` has no such constraint and genuinely scheduled across two different nodes (`app-vm1` and `azureops-vm01`) on its own — confirmed via `kubectl get pods -o wide`, not assumed from the replica count alone.
+- Verified real load balancing on genuine live traffic, not a synthetic test: sent a fresh burst of 10 requests to `https://devopspk.online/health`, then immediately checked both backend pods' logs with `--since=20s` — both showed real, fresh hits within the same window, confirming the Kubernetes Service is doing genuine round-robin distribution on production traffic right now, not just historically during the earlier `demo-app` test.
+- Updated the relevant curriculum chapter (Module 8's "Deployments and ReplicaSets," originally written around a throwaway `hello-k3s` demo) with a real update note pointing to this production verification, rather than leaving the chapter describing only the disposable test object.
+
+**Commands used:**
+```bash
+kubectl apply -f backend.yaml    # replicas: 1 -> 2
+kubectl apply -f frontend.yaml   # replicas: 1 -> 2, + readinessProbe
+kubectl get pods -n azureops-copilot -o wide
+# backend: both replicas on app-vm1 (nodeSelector constraint)
+# frontend: spread across app-vm1 and azureops-vm01
+
+for i in $(seq 1 10); do curl -s -o /dev/null https://devopspk.online/health; done
+kubectl logs backend-<pod-1> -n azureops-copilot --since=20s | grep -c health   # 6
+kubectl logs backend-<pod-2> -n azureops-copilot --since=20s | grep -c health   # 11
+# both pods genuinely serving live traffic in the same real window
+```
+
+**What broke / what I learned:**
+- Nothing broke — this was pure verification of an existing, already-configured mechanism (the Kubernetes Service), not new infrastructure.
+- A real, concrete example of a constraint added for one reason (Key Vault access, node-pinning) having a real, unrelated side effect later (limiting replica spread) — worth checking `kubectl get pods -o wide` after any scale-up rather than assuming replicas landed usefully spread out just because the replica count looks right.
+
+**Cost check:** $0 — one extra pod each for `backend` and `frontend`, same VMs already paid for. No new Azure resource.

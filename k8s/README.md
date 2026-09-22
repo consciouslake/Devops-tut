@@ -101,13 +101,14 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
   public route (`/headlamp` on `devopspk.online`, `priority: 1000` —
   needed to unambiguously beat the catch-all Ingress's own
   Traefik-computed default priority, based on its rule string's length).
-  Because Headlamp itself is only gated by a bearer token (short-lived,
-  but the route being permanently public meant that alone wasn't enough),
-  it now also sits behind a Traefik `Middleware` (`basicAuth`, same file)
-  backed by a `headlamp-basic-auth` Secret — **created imperatively on
-  the cluster, not committed to git**, same pattern as Key Vault-sourced
-  app secrets (Module 11): `kubectl -n headlamp create secret generic
-  headlamp-basic-auth --from-literal=users='<user>:<apr1-hash>'` (hash via
-  `openssl passwd -apr1`). A request without valid BasicAuth now gets a
-  real `401` before it ever reaches Headlamp's own token login screen —
-  verified via `curl` both ways.
+  Gated by Headlamp's own Kubernetes bearer-token login only — a Traefik
+  `basicAuth` Middleware was tried in front of it as a second, password-based
+  layer, but **reverted**: Traefik's BasicAuth and Headlamp's own token both
+  need the single `Authorization` header, and a request can't carry both at
+  once — the browser's cached Basic credentials and Headlamp's JS-set Bearer
+  token collided, confirmed with `curl` sending each in isolation (a
+  Bearer-only request got rejected by Traefik with a `401` asking for Basic,
+  proving the two mechanisms are fundamentally incompatible on the same
+  route). Mint a fresh token any time with:
+  `ssh azureadmin@20.235.48.180 "sudo kubectl -n headlamp create token
+  headlamp --duration=1h"`.

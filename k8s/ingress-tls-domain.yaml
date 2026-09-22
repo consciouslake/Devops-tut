@@ -9,6 +9,7 @@ spec:
   routes:
   - match: Host(`devopspk.online`) || Host(`www.devopspk.online`)
     kind: Rule
+    priority: 1
     services:
     - name: waf-proxy
       port: 80

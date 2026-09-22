@@ -89,3 +89,25 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
   actually be built — this subscription's Free Trial tier is explicitly
   blocked from creating any Front Door resource, confirmed via a real,
   failed `az afd profile create` call, not a guess.
+- **Cluster UI — Headlamp, not the Kubernetes Dashboard**: the official
+  Kubernetes Dashboard project is archived/unmaintained; Kubernetes itself
+  now points to **Headlamp** (Kubernetes SIG-UI) instead. Installed via
+  Helm (`headlamp-values.yaml` captures the real applied config —
+  `-base-url=/headlamp` plus matching probe paths, both needed since the
+  chart's defaults assume root-path serving). Its ServiceAccount is bound
+  to `cluster-admin` by the chart's own default, judged acceptable here
+  since it grants nothing beyond what the account owner already has via
+  their own kubeconfig. `headlamp-ingress.yaml` is the **permanent**
+  public route (`/headlamp` on `devopspk.online`, `priority: 1000` —
+  needed to unambiguously beat the catch-all Ingress's own
+  Traefik-computed default priority, based on its rule string's length).
+  Because Headlamp itself is only gated by a bearer token (short-lived,
+  but the route being permanently public meant that alone wasn't enough),
+  it now also sits behind a Traefik `Middleware` (`basicAuth`, same file)
+  backed by a `headlamp-basic-auth` Secret — **created imperatively on
+  the cluster, not committed to git**, same pattern as Key Vault-sourced
+  app secrets (Module 11): `kubectl -n headlamp create secret generic
+  headlamp-basic-auth --from-literal=users='<user>:<apr1-hash>'` (hash via
+  `openssl passwd -apr1`). A request without valid BasicAuth now gets a
+  real `401` before it ever reaches Headlamp's own token login screen —
+  verified via `curl` both ways.

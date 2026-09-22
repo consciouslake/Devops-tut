@@ -1305,3 +1305,62 @@ az resource list --resource-group azureops-copilot-rg --query "[].{name:name, ha
 - Azure Policy enforcement (at least for this built-in tag-requirement policy) is immediate, not eventually-consistent — no need to wait or assume propagation delay before testing it.
 
 **Cost check:** $0 added this round — the port-binding fix is pure Docker Compose config, and Azure Policy's built-in definitions (including the tag-requirement one used here) carry no charge. Both real gaps (unauthenticated local exposure, ungoverned tagging) closed without any new Azure spend, in contrast to the Key Vault/NAT Gateway work earlier this module which did have real, deliberate cost.
+
+## AzureOps Copilot goes live — real production deployment to the k3s cluster — 2026-09-22
+
+**Plan item(s):** User: "let's put it online first then we will think about other features that are planned" — a deliberate pause on the module sequence to actually deploy the real app, not another module chapter.
+
+**What I did:**
+- Before building anything, asked three real questions rather than assuming: where to deploy (chose the existing k3s cluster, $0 new cost, over anywhere else), how to handle the AI Mentor's real Gemini API cost exposure once public (chose adding rate limiting first, over going live unprotected), and whether to connect the real `devopspk.online` domain now (chose no — public IP only, keeping the domain reserved for Module 12 as already decided back in Module 6).
+- Added `backend/rate_limit.py`: a simple in-memory sliding-window limiter (10 ingests/min, 20 chat messages/5min per client IP, parsed from `X-Forwarded-For`) — appropriate for a single-replica app, no Redis-backed distributed limiter needed. Verified it genuinely triggers: 10 rapid `/ingest` calls succeed, the 11th/12th get `429`.
+- Checked whether the CI-published `ghcr.io/consciouslake/azureops-backend`/`-frontend` images were pullable from the cluster — they weren't (401, private packages). Presented the real tradeoff (make public vs. GitHub PAT pull secret); user chose public. (My own first check of "is it public now" gave a false-negative 401 — a bare GET against `ghcr.io`'s v2 API always 401s as an OCI auth challenge, even for public images; the real test is the full anonymous-token exchange, which I redid properly and got a genuine `200`.)
+- Tested whether a pod on the cluster can reach the VM's Managed Identity via IMDS before assuming it would work: `HTTP 200` from a throwaway `curlimages/curl` pod — confirmed the Key Vault + Managed Identity mechanism built in Module 11 would work for an actual workload pod, not just VM-level processes.
+- Wrote real Kubernetes manifests (`k8s/` in the repo, not just applied ad hoc) for Qdrant (with a PVC), Redis, backend (pinned to `app-vm1` via `nodeSelector` — the only node with the granted Key Vault role — `AZURE_KEY_VAULT_NAME` set, `OTEL_ENABLED=false` since no Tempo exists in this namespace yet), frontend, and an Ingress claiming `/`.
+- **Routing conflict, handled correctly:** `/` was already claimed by Grafana's catch-all Ingress (Module 10). Reconfigured Grafana to serve from `/grafana` instead via `helm upgrade --reuse-values`, setting `grafana.ini`'s `server.root_url` + `server.serve_from_sub_path`.
+- **First `--set` attempt silently failed:** `--set grafana.grafana.ini.server.root_url=...` set nothing — checked the actual `grafana.ini` ConfigMap afterward and found no `root_url` present at all, no error either. Root cause: the chart's real values path is `grafana."grafana.ini".server...` (a literal dotted key nested one level, not two nested `grafana` keys) — fixed by using a proper values YAML file instead of guessing `--set` dot-escaping.
+- **Real regression caught along the way:** the Helm upgrade that moved Grafana recreated its pod, which wiped the custom "AzureOps k3s Cluster Overview" dashboard from Module 10 — checked `/api/search` afterward rather than assuming the dashboard survived, found it gone. Root cause: Grafana had never had persistent storage enabled in this cluster, so its SQLite DB (including anything created via the dashboard API) was ephemeral on every pod restart the whole time, not just this one. Fixed properly with a 1Gi PVC (`local-path`, $0 marginal — same storage class already used for Qdrant), re-created the dashboard, then deliberately force-deleted the Grafana pod again specifically to prove persistence actually works now (it did — the dashboard survived a real, deliberate restart, not just an assumption).
+- Applied the app manifests. First `kubectl apply` failed entirely (`namespaces "azureops-copilot" not found`, repeated for every resource) — root cause: concatenating the individual manifest files with plain `cat` left no `---` document separator between the Namespace doc and the next file, merging them into one malformed YAML document so the Namespace was never actually created. Fixed by rebuilding the combined file with explicit `---` separators between every source file, re-applied cleanly (all 11 resources created, namespace confirmed `Active`).
+- All 4 pods came up `1/1 Running` on the first real rollout. Backend's logs showed the real proof this all actually worked: `"Loaded secrets from Key Vault azureops-copilot-kv (Managed Identity)"` — not inferred from the pod not crashing, read directly from the log line.
+- Verified the full path end-to-end through the public IP, not just individual pieces: a real `/ingest` POST (`chunks_ingested: 1`), then a real WebSocket `/chat` query from inside the backend container targeting the public IP — got a real, correctly-grounded Gemini-generated answer using the just-ingested context. Also re-confirmed Grafana (`/grafana`) and the earlier demo-app (`/demo-app`) both still work, coexisting with the new app's `/` via Traefik's path-prefix routing.
+
+**Commands used:**
+```bash
+# rate limiting verification
+for i in $(seq 1 12); do curl -s -o /dev/null -w "%{http_code} " -X POST http://localhost:8000/ingest -d '...'; done
+# 200 200 200 200 200 200 200 200 200 200 429 429
+
+# real ghcr.io public-visibility check (anonymous token flow, not a bare GET)
+TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:consciouslake/azureops-backend:pull" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+curl -s -o /dev/null -w "HTTP %{http_code}\n" -H "Authorization: Bearer $TOKEN" \
+  "https://ghcr.io/v2/consciouslake/azureops-backend/manifests/latest"
+
+# pod -> IMDS reachability test
+kubectl run imds-test --image=curlimages/curl --restart=Never --rm -i --timeout=30s -- \
+  curl -s -H 'Metadata:true' 'http://169.254.169.254/metadata/identity/oauth2/token?...'
+# HTTP 200
+
+# Grafana subpath + persistence, via a proper values file (not --set)
+helm upgrade monitoring prometheus-community/kube-prometheus-stack -n monitoring \
+  --reuse-values -f grafana-subpath-persistence-values.yaml
+
+# proving persistence for real, not assuming
+kubectl delete pod -n monitoring -l app.kubernetes.io/name=grafana
+curl -u admin:$PW 'http://<grafana-ip>/api/search?query=AzureOps'
+# dashboard still there after a real, deliberate pod deletion
+
+kubectl apply -f k8s/   # after fixing the missing --- separators
+kubectl rollout status deployment backend -n azureops-copilot
+kubectl logs -n azureops-copilot -l app=backend
+# "Loaded secrets from Key Vault azureops-copilot-kv (Managed Identity)"
+
+curl -X POST http://20.235.48.180/ingest -d '{"text":"...", "source":"go-live-test"}'
+# real WebSocket /chat query through the public IP -- real, correct answer
+```
+
+**What broke / what I learned:**
+- A bare, unauthenticated `GET` against `ghcr.io`'s registry API always returns `401` as a normal OCI auth challenge — this does NOT mean the package is private. The real test is the full anonymous-token exchange (`GET /token?scope=...` then use that bearer token). Nearly reported a false "still private" status to the user based on the wrong check.
+- Helm `--set` with a chart value whose real key contains a literal dot (`grafana.ini`) nested under another key (`grafana`) is genuinely easy to get wrong via dot-notation escaping — a values YAML file avoids the ambiguity entirely and is worth reaching for immediately rather than iterating on `--set` escaping.
+- A resource that "worked before" (Grafana's dashboard) can still have a real, silent gap (no persistent storage) that only surfaces the next time something forces a pod recreation — the right fix here wasn't to just recreate the dashboard, it was to find *why* it disappeared and fix that root cause, then prove the fix with a real, deliberate repeat of the same action that caused the loss.
+- `cat file1.yaml file2.yaml > combined.yaml` is not a safe way to build a multi-document Kubernetes manifest — YAML documents need an explicit `---` separator, and a missing one can silently merge two documents into something that parses without an error but creates nothing correctly. Always verify the actual separator count / a `kubectl apply --dry-run` for multi-file concatenation, don't assume simple concatenation is equivalent to a proper multi-doc file.
+
+**Cost check:** $0 new Azure compute — reuses the existing k3s cluster and Traefik Ingress entirely. Grafana's new 1Gi PVC is negligible disk on already-provisioned VM storage. The one real, deliberately-accepted new cost surface is the AI Mentor's Gemini API usage now being publicly reachable, mitigated (not eliminated) by the rate limiter added specifically before going live.

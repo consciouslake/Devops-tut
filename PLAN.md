@@ -445,6 +445,21 @@ decommission test artifact) was also removed as redundant now that the
 real app is live at `/`. See LEARNING_LOG.md "Post-Module-11 cleanup" for
 the full verification.
 
+**Update, 2026-09-22 (real load balancing, verified on live traffic):**
+`backend` and `frontend` scaled from 1 to 2 replicas each, specifically to
+verify replica-level load balancing on genuine production traffic rather
+than assume the earlier `demo-app` test still applied. Real finding:
+`backend`'s `nodeSelector: kubernetes.io/hostname: app-vm1` (required for
+its Key Vault Managed Identity access, Module 11) means both its replicas
+land on the same node — real protection against a pod crash, not against
+that node going down. `frontend` has no such constraint and genuinely
+spread across two different nodes on its own. Verified with a live burst
+of requests against `https://devopspk.online/health`: both backend pods'
+logs showed real traffic within the same 20-second window, confirming the
+Kubernetes Service is doing genuine round-robin distribution on live
+production traffic, not just a one-time demo. See LEARNING_LOG.md "Real
+load balancing verified on live traffic" for the full walkthrough.
+
 **Real decisions made before going live, not skipped:**
 - **Image access:** CI already publishes `ghcr.io/consciouslake/azureops-backend`
   and `-frontend` on every merge to `main`, but as *private* packages — the

@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waf-proxy
+  namespace: azureops-copilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: waf-proxy }
+  template:
+    metadata:
+      labels: { app: waf-proxy }
+    spec:
+      containers:
+      - name: waf-proxy
+        image: owasp/modsecurity-crs:nginx
+        env:
+        - name: BACKEND
+          value: "http://frontend.azureops-copilot.svc.cluster.local:80"
+        - name: PARANOIA
+          value: "1"
+        - name: PORT
+          value: "8080"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waf-proxy
+  namespace: azureops-copilot
+spec:
+  selector: { app: waf-proxy }
+  ports:
+  - port: 80
+    targetPort: 8080

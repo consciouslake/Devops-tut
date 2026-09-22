@@ -12,6 +12,6 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: frontend
+            name: waf-proxy
             port:
               number: 80

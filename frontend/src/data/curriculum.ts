@@ -2097,6 +2097,156 @@ export const modules: Module[] = [
         azureConnection:
           "Both fixes are $0: the port-binding change is pure Docker Compose config, and built-in Azure Policy definitions carry no charge — a reminder that not every security/governance gap needs paid tooling (Defender for Cloud, Azure Policy's paid guest-configuration add-ons) to close.",
       },
+      {
+        id: 'shared-responsibility',
+        title: 'Shared responsibility, grounded in what this project actually built',
+        concept:
+          "Azure's shared responsibility model splits security obligations between Microsoft and the customer, and where the line falls shifts with the service model — IaaS (the VMs this project runs on) leaves the most on the customer; PaaS (Key Vault, Storage) shifts more to Azure. Made concrete with this project's own real examples rather than the generic version: for `app-vm1`/`app-vm2`/`azureops-vm01` (IaaS), Azure is responsible for the physical hosts, the hypervisor, and physical datacenter security — this project is responsible for OS patching, NSG rules, what runs on the VM (k3s, the app), and every credential/RBAC decision made on top of it. For Key Vault (PaaS), Azure is responsible for the vault's own infrastructure, encryption at rest, and the HSM backing it — this project is still responsible for who gets which RBAC role on it (the exact work done in the Key Vault chapters), and for not leaking a fetched secret value into logs (the auto-mode classifier catching one such attempt this session is a concrete example of that boundary being enforced).",
+        whyDevops:
+          "Misunderstanding this split is a real, common cause of breaches — assuming a managed service like Key Vault \"handles security\" and therefore skipping RBAC configuration, or assuming Azure patches a VM's guest OS automatically when it doesn't. Every real security decision made in this module (RBAC scoping, NSG rules, secret handling discipline) exists specifically on the customer side of this line.",
+        handsOn: [
+          { label: 'The split, mapped to real resources in this project', code: "# IaaS -- app-vm1, app-vm2, azureops-vm01\n# Azure: physical host, hypervisor, datacenter\n# THIS PROJECT: guest OS patching, NSG rules, k3s + app config, all RBAC\n\n# PaaS -- Key Vault, Storage Account\n# Azure: vault/storage infrastructure, encryption at rest, HSM\n# THIS PROJECT: who gets which RBAC role, never logging a real secret value\n# (the auto-mode classifier blocking a value-printing attempt this session\n#  is the customer-side responsibility being enforced in practice)" },
+        ],
+        troubleshooting: [
+          'Assuming a managed PaaS service is automatically secure end-to-end → Key Vault\'s own infrastructure is Azure\'s responsibility, but a real 403 was hit this module because RBAC roles still had to be explicitly configured — the service being "managed" only covers Azure\'s half of the line.',
+        ],
+        interview: [
+          'Where does the shared responsibility line fall differently between an IaaS VM and a PaaS service like Key Vault?',
+          'Give a real example from this project of a security control that lives entirely on the customer side of that line.',
+        ],
+        azureConnection:
+          "Every real incident and fix in this module — RBAC 403s, the NAT Gateway egress regression, the port-binding exposure fix, secret-value handling discipline — happened entirely on this project's side of the shared responsibility line, not Azure's; that's the concrete evidence for where the line actually falls, not just the textbook description of it.",
+      },
+      {
+        id: 'entra-id-rbac-audit',
+        title: 'A real RBAC audit: one good example, one real over-permission finding',
+        concept:
+          "Rather than describe RBAC in the abstract, the subscription's actual role assignments were listed and audited. The good example: Key Vault's RBAC (from earlier this module) is scoped tightly — the human account has `Key Vault Secrets Officer` *only* on the vault itself, and `app-vm1`'s Managed Identity has `Key Vault Secrets User` *only* on the same vault, nothing broader. The real finding: the GitHub Actions OIDC identity (`azureops-copilot-github-oidc`, built in Module 7) holds **`Contributor` over the entire resource group**, but the CI workflow's actual `deploy` job only runs read-only verification (`az account show`, `az resource list`) — it doesn't deploy anything yet. That's a real, live example of an identity holding meaningfully more power than it uses, the opposite of the Key Vault roles right next to it. Also found: a genuinely redundant duplicate `Owner` role assignment for the same human account at subscription scope (two separate assignment IDs, same role, same scope) — doesn't grant extra privilege since it's the same role, but is unnecessary clutter an RBAC audit should still catch.",
+        whyDevops:
+          "An RBAC audit isn't about assuming misconfiguration exists — it's about actually listing real assignments and checking each one against what that identity genuinely needs, which is exactly how this real, live over-permission was found instead of assumed. CI/CD identities are a common real-world blind spot: they're created once during pipeline setup and rarely revisited as the pipeline's actual scope changes.",
+        handsOn: [
+          { label: 'The actual audit commands run this session', code: 'az role assignment list --query "[].{principal:principalName, role:roleDefinitionName, scope:scope}"\n# found: subscription-level Owner (human), a DUPLICATE identical assignment,\n# and Contributor at resource-group scope for azureops-copilot-github-oidc\n\naz role assignment list --scope <key-vault-id>\n# contrast: Key Vault Secrets Officer / Secrets User, both correctly scoped\n# to just the vault -- the RBAC pattern done right' },
+        ],
+        troubleshooting: [
+          'A CI/CD identity granted broad permissions during initial pipeline setup, then never revisited as the pipeline\'s real scope became clear → exactly what was found here; the fix (not yet applied, a deliberate decision) would be downgrading to the narrowest role the actual workflow steps require, e.g. Reader for the current read-only verification.',
+          'Confusing "no extra privilege granted" with "nothing to fix" → the duplicate Owner assignment grants no additional access since it\'s the same role/scope, but redundant role assignment objects are still worth cleaning up as a matter of tidy, auditable governance.',
+        ],
+        interview: [
+          'Why might a CI/CD pipeline\'s service identity end up more permissioned than it needs to be, even without anyone making an obvious mistake?',
+          'What\'s the risk of a CI/CD identity holding write/delete permissions it never actually uses in its current workflow?',
+        ],
+        azureConnection:
+          "This is a genuinely live, unresolved finding in this real subscription, not a hypothetical — `azureops-copilot-github-oidc` currently holds more power than the Module 7 workflow uses, a real decision point for whenever real automated deployment through this identity is actually built.",
+      },
+      {
+        id: 'secret-rotation',
+        title: 'Secret rotation, demonstrated for real against the live app',
+        concept:
+          "Key Vault versions every secret automatically — `az keyvault secret set` on an existing name doesn't overwrite, it creates a new version while keeping prior ones retrievable (confirmed: two distinct version timestamps after one rotation). Rotation was tested against the actual live backend pod, not a throwaway example: `jwt-secret`'s value was rotated in the vault, the live pod was deleted, and the replacement pod's logs showed the same `\"Loaded secrets from Key Vault\"` line — confirming the fresh value gets fetched at startup. This also surfaces a real architectural property worth naming explicitly: this app loads secrets *once, at process startup*, not on a refresh interval — rotating a secret in the vault has **zero effect** on an already-running pod until it restarts. For an app needing zero-downtime rotation, that would mean either a periodic in-app refresh or subscribing to Key Vault's Event Grid change notifications; neither was needed here since a full pod restart is cheap and already the deploy model.",
+        whyDevops:
+          "Assuming \"I rotated the secret in the vault\" means \"the running app is now using the new value\" is a genuine, easy mistake — this app's actual behavior (startup-only fetch) was verified directly rather than assumed, and the gap between vault-side rotation and app-side pickup is exactly the kind of thing that causes real incidents (an old, revoked credential still working somewhere because nothing ever restarted).",
+        handsOn: [
+          { label: 'Real rotation against the live pod, verified end to end', code: "az keyvault secret set --vault-name azureops-copilot-kv --name jwt-secret --value \"<new value>\"\naz keyvault secret list-versions --vault-name azureops-copilot-kv --name jwt-secret\n# two versions now, both retrievable -- old one not destroyed\n\nkubectl delete pod -n azureops-copilot -l app=backend\nkubectl logs -n azureops-copilot -l app=backend --tail 10\n# \"Loaded secrets from Key Vault azureops-copilot-kv (Managed Identity)\"\n# -- fresh fetch confirmed, not assumed" },
+          { label: 'Confirmed the live app kept working through the restart', code: 'curl http://20.235.48.180/\n# HTTP 200\ncurl -X POST http://20.235.48.180/ingest -d \'{"text":"...", "source":"rotation-test"}\'\n# real ingest still succeeds after the rotation-triggered restart' },
+        ],
+        troubleshooting: [
+          'Rotating a secret in Key Vault and assuming a running application immediately uses the new value → check how and when that specific app actually reads its secrets (startup-only vs. periodic refresh vs. event-driven) before assuming rotation took effect; verified here by checking real pod logs after a real restart, not assumed.',
+        ],
+        interview: [
+          'What actually happens to an already-running process\'s in-memory secret value when you rotate that secret in Key Vault?',
+          'What are the tradeoffs between startup-only secret loading and a periodic refresh, for an app that needs to survive rotation without a restart?',
+        ],
+        azureConnection:
+          "Key Vault's automatic secret versioning (every write creates a new version, nothing is destroyed until explicitly purged) is what makes rotation safe to test against a live system — the previous `jwt-secret` value stayed retrievable throughout, so this test carried zero risk of permanent loss even though it targeted the real running deployment.",
+      },
+      {
+        id: 'security-scanning-ci',
+        title: 'Security scanning in CI: what\'s already there, and a real incident it caught',
+        concept:
+          "This project's CI pipeline (Module 7) already runs real security scanning on every push: `gitleaks` (secret-leak detection, both as a pre-commit hook and a CI job) and Trivy (container image vulnerability scanning, gated to fail the build on HIGH/CRITICAL findings). This isn't hypothetical coverage — Trivy genuinely caught a real vulnerability later in the project's life: when Module 10 added OpenTelemetry packages, their transitive dependency resolution pulled in `protobuf 4.25.9`, and Trivy correctly failed the build over `CVE-2026-0994` (HIGH severity, fixed in 5.29.6+). The fix (upgrading the whole OTel dependency set to a version compatible with a patched protobuf) was verified by rebuilding clean and confirming the exact same real functionality (a traced `/chat` query) still worked afterward — the scanner did its job exactly as intended: block a real vulnerable dependency from shipping, without silently ignoring it via a blanket `.trivyignore` entry.",
+        whyDevops:
+          "Security scanning in CI only has value if it's actually gating merges, not just running and being ignored — this project has a real, dated example of exactly that gate doing its job on a dependency nobody was specifically watching, which is a stronger demonstration than any amount of describing the tooling in the abstract.",
+        handsOn: [
+          { label: 'The real incident this scanning caught (Module 10)', code: '# Trivy build output at the time:\n# protobuf 4.25.9\n# CVE-2026-0994\n# Severity: HIGH\n# Fixed in: 5.29.6 or 6.33.5\n\n# exit-code: 1 in .github/workflows/ci.yml -- build correctly FAILED,\n# not just warned\n\n# fix: upgraded opentelemetry-api/sdk/exporter to 1.44.0 (from 1.27.0),\n# which resolves cleanly against protobuf>=5.29.6 -- re-verified clean\n# install AND a real traced /chat query still worked before merging' },
+        ],
+        troubleshooting: [
+          'A new dependency pulling in a vulnerable transitive package isn\'t always obvious from the direct `pip install` line you wrote — the real fix here required tracing the dependency graph (`opentelemetry-exporter-otlp-proto-grpc` → `opentelemetry-proto` → capped `protobuf<5.0`) rather than just reading the top-level requirements.txt addition.',
+          'Reaching for `.trivyignore` as the first response to a scan failure → only appropriate when a fix genuinely isn\'t available or the finding is a real false positive with documented reasoning (this project\'s existing `.trivyignore` entries are exactly that); here a real fixed version existed, so upgrading was the correct response, not suppressing the finding.',
+        ],
+        interview: [
+          'Walk through what should happen when a CI security scan fails a build over a transitive dependency\'s vulnerability, versus one in a direct dependency.',
+          'When is adding an entry to a scanner\'s ignore list the right call, and when is it just hiding a real problem?',
+        ],
+        azureConnection:
+          "No Azure service is involved in this scanning at all (gitleaks/Trivy run entirely in GitHub Actions) — a reminder that meaningful security tooling doesn't require an Azure-native product (Defender for DevOps, etc.) to already be delivering real, verified value in a pipeline.",
+      },
+      {
+        id: 'least-privilege-synthesis',
+        title: 'Least privilege and threat-aware architecture: the real pattern across this whole module',
+        concept:
+          "Synthesizing every real decision made across Module 11 into one pattern: scope every identity to exactly what it needs, verify both the allow and the deny case, and reduce attack surface at the layer where it actually lives. The evidence, all real: (1) Key Vault RBAC — the human account and `app-vm1`'s Managed Identity each hold a role scoped to *only* the vault, verified with both a positive test (`app-vm1` gets a real secret) and a negative one (`app-vm2`, deliberately given no role, gets a real `403`). (2) The CI/CD identity — found holding `Contributor` over the whole resource group while its actual workflow only reads; documented as a real, live over-permission rather than quietly ignored. (3) Network exposure — the backend's Docker port was open to the whole LAN by default; fixed with the narrowest change that solved the actual problem (bind to localhost) rather than the broadest one (a full auth system). (4) The public app itself — rate limiting added *before* going live, not after seeing abuse, specifically because a real, usage-billed API sat behind it. Threat-aware architecture isn't a separate checklist from least privilege here — it's the same discipline (what does this specific thing actually need, and what's the realistic cost of it being wrong) applied at every layer: identity, network, and application.",
+        whyDevops:
+          "The throughline across every real finding this module — from the Key Vault 403 to the CI over-permission to the rate limiter — is the same question asked at a different layer: does this identity/port/API call have exactly the access it needs, no more. That's a more durable skill than memorizing any single Azure security feature, because it transfers to services and platforms this project never touched.",
+        handsOn: [
+          { label: 'The pattern, verified at every layer this module touched', code: '# Identity layer: positive AND negative RBAC tests\n# app-vm1 (granted role)    -> HTTP 200, real secret\n# app-vm2 (no role granted) -> HTTP 403, ForbiddenByRbac\n\n# CI/CD layer: found, not fixed (documented as a live decision point)\n# azureops-copilot-github-oidc: Contributor on the whole RG,\n# but workflow only does read-only verification today\n\n# Network layer: narrowest fix for the actual exposure\n# docker-compose.yml: 8000:8000 -> 127.0.0.1:8000:8000\n\n# Application layer: rate limiting added BEFORE going public\n# 10 ingests/min, 20 chat messages/5min per client IP' },
+        ],
+        troubleshooting: [
+          'Treating least privilege as an identity-only concern → this module\'s real findings span identity (Key Vault RBAC), network (the port-binding fix), and application (rate limiting) — the same "minimum necessary access" question applies at every layer, not just IAM role assignments.',
+          'Fixing every finding immediately as a reflex → the CI over-permission was deliberately left as a documented, live decision rather than auto-fixed, since tightening it now might conflict with real deployment automation being built soon; least privilege is a real tradeoff against future velocity, not a rule to apply blindly everywhere at all times.',
+        ],
+        interview: [
+          'Describe three different layers (not just IAM) where a least-privilege decision was made in this project, and what each one protects against.',
+          'When might deliberately leaving a known over-permission in place, rather than immediately tightening it, be the right call?',
+        ],
+        azureConnection:
+          "This closes Module 11's outcome directly: every real secret this app needs now comes from Key Vault via Managed Identity, not a hard-coded value, and every access to it — human or workload — was verified against both what it should and shouldn't be able to do.",
+      },
+      {
+        id: 'defender-for-cloud-free-tier',
+        title: 'Defender for Cloud: the free tier is real, and it found real findings',
+        concept:
+          "Defender for Cloud's pricing is genuinely two-tier, and it's easy to assume the whole product is paid. **Foundational CSPM** — Secure Score, security recommendations, compliance benchmark mapping (NIST/CIS/PCI DSS), asset inventory — is completely free and, as of late 2026, moving to opt-in for *new* subscriptions but staying free regardless. The confusingly-named API field (`pricingTier: \"Standard\"` for the `FoundationalCspm` plan) is a historical naming artifact, not a sign it bills — verified via Microsoft's own current documentation before trusting it, not assumed from the CLI output alone. The **paid** plans are separate, explicitly-named ones (Defender for Servers, Storage, Key Vault, Containers, Resource Manager, APIs, etc.) that this project deliberately left off. Enabling the free tier surfaced a real Secure Score of **2.0/26 (7.7%)** on this subscription and a real list of unhealthy recommendations — some free and worth fixing (no security contact email configured, no high-severity alert notifications), some just upsells for the paid Defender plans this project isn't buying, and some genuine hardening opportunities logged rather than acted on immediately (NSG port restrictions, VM backup, disk encryption).",
+        whyDevops:
+          "A near-zero Secure Score isn't a failure state to be embarrassed by — it's exactly the kind of concrete, quantified signal that makes security posture legible instead of a vague feeling; the real value here is that this number and its underlying recommendations are backed by actual configuration on actual resources, not a checklist filled in from memory.",
+        handsOn: [
+          { label: 'Confirming the free tier is genuinely free before trusting it', code: 'az security pricing show --name FoundationalCspm\n# pricingTier: "Standard" -- looks paid, but this specific plan name\'s\n# "Standard" tier IS the free one (confirmed against Microsoft\'s current\n# docs, not assumed); the genuinely paid plan has a different name\n# entirely ("Defender CSPM"), and isn\'t present on this subscription' },
+          { label: 'Real Secure Score and real findings, not a demo', code: 'az security secure-scores list\n# Current: 2.0  Max: 26  Percentage: 7.69%\n\naz security assessment list --query "[?status.code==\'Unhealthy\'].displayName"\n# real findings included:\n# "Subscriptions should have a contact email address for security issues"\n# "Email notification for high severity alerts should be enabled"\n# "Microsoft Defender for Servers should be enabled" -- paid upsell, skipped' },
+          { label: 'Acted on the free, quick ones', code: 'az security contact create --name default \\\n  --emails "<real address>" \\\n  --alert-notifications state=On minimalSeverity=High \\\n  --notifications-by-role state=On roles=["Owner"]\n# real config change, confirmed via the API response -- the assessment\n# itself takes hours to re-run and flip to Healthy, not instant like an\n# RBAC test' },
+        ],
+        troubleshooting: [
+          'Trusting a CLI field name (`pricingTier: Standard`) at face value without checking current documentation → this exact field looks like it indicates a paid tier, but for the `FoundationalCspm` plan specifically it doesn\'t; verified against real, current Microsoft documentation before writing this chapter rather than guessing from the API shape alone.',
+          'Expecting a Defender for Cloud recommendation to flip to "Healthy" immediately after fixing the underlying config → its assessment engine runs on a periodic schedule (hours), unlike a live RBAC check that\'s enforced instantly on the next API call; the fix was verified via the real config API response instead of waiting on the recommendation status.',
+        ],
+        interview: [
+          'How would you verify whether a specific Defender for Cloud plan is actually free, rather than trusting a field name in the API response?',
+          'Why might a security recommendation stay "Unhealthy" for a while even after you\'ve genuinely fixed the underlying issue?',
+        ],
+        azureConnection:
+          "Real, deliberate cost-conscious decision consistent with the rest of this project: the free Foundational CSPM tier delivers genuine value (a real Secure Score and real findings on this actual subscription) without paying for any of the per-resource Defender plans this small project doesn't need.",
+      },
+      {
+        id: 'waf-self-hosted-k8s',
+        title: 'WAF: rebuilding the self-hosted pattern as a real Kubernetes workload',
+        concept:
+          "Real Azure WAF pricing was checked before deciding anything: Application Gateway v2 with WAF enabled runs roughly **$32.85/month fixed** (`$0.045/gateway-hour`) plus capacity-unit and data-transfer charges — a real, meaningful ongoing cost for a personal project. Module 6 had already proven the $0 alternative works (a self-hosted `owasp/modsecurity-crs` container blocking a real SQL-injection payload), but that container was decommissioned along with `azureops-lb` in Module 10. Rebuilt here as a genuine Kubernetes workload instead of a VM-level container: `waf-proxy` (Deployment + Service) sits between Traefik and `frontend`, and the live Ingress's `/` rule was repointed from `frontend` directly to `waf-proxy` — so every real request to the public app now passes through WAF inspection first, not as a parallel, bypassable path. Verified in two stages, not one: first internally (a throwaway pod hitting the WAF Service directly, confirming a normal request returns `200` and an SQLi-style payload returns `403`) *before* touching the live Ingress, then again against the actual public IP after the cutover — including the real WebSocket `/chat` path, which is the part most likely to break silently behind a reverse proxy and wasn't assumed to work without testing.",
+        whyDevops:
+          "Testing a new proxy layer internally before routing real, live public traffic through it is the same deploy-verify-cutover discipline already used for the Module 10 Load Balancer decommission — never point live traffic at something you haven't independently confirmed works, especially something that could silently break the WebSocket path that a plain HTTP test wouldn't catch.",
+        handsOn: [
+          { label: 'Deployed and verified internally first, before any live cutover', code: "kubectl apply -f waf.yaml   # Deployment + Service, BACKEND points at frontend\n\n# internal test, NOT yet in the live path:\nkubectl run waf-test --image=curlimages/curl -n azureops-copilot --rm -i -- \\\n  curl -s -o /dev/null -w 'HTTP %{http_code}\\n' 'http://waf-proxy/?id=1%27%20OR%20%271%27=%271'\n# HTTP 403 -- confirmed working before touching the live Ingress" },
+          { label: 'Only then: reroute the live Ingress', code: '# Ingress "/" path: frontend -> waf-proxy\nkubectl apply -f ingress.yaml' },
+          { label: 'Verified against the real public IP, including WebSocket', code: 'curl "http://20.235.48.180/?id=1%27%20OR%20%271%27=%271"\n# HTTP 403 -- real attack blocked on the live, public endpoint\n\ncurl -X POST http://20.235.48.180/ingest -d \'{"text":"...", "source":"waf-test"}\'\n# real ingest still works\n\n# real WebSocket /chat through the WAF -- the riskiest part to assume works\n# -> got a real, correct Gemini-generated response, upgrade path intact' },
+        ],
+        troubleshooting: [
+          'Assuming a reverse-proxy WAF will transparently pass through a WebSocket upgrade just because plain HTTP works → verified explicitly with a real `/chat` query after the cutover, specifically because this is exactly the kind of thing that silently breaks with a naive reverse-proxy config and a plain `curl` test to `/` wouldn\'t catch.',
+          'Rerouting live production Ingress traffic to a new backend before independently verifying that backend → tested internally first (pod-to-Service, no public exposure) and only touched the live Ingress after that passed, limiting the blast radius of a bad config to zero real traffic.',
+        ],
+        interview: [
+          'Why test a new proxy layer from inside the cluster before routing real external traffic to it, rather than testing directly against production?',
+          'What specifically about a WebSocket connection makes it a higher-risk thing to silently break behind a new reverse proxy, compared to a plain HTTP request?',
+        ],
+        azureConnection:
+          "Directly mirrors Module 6's original WAF chapter (self-hosted ModSecurity chosen over Application Gateway's WAF SKU) and Module 10's Load Balancer decommission discipline (deploy new, verify new, only then cut over) — the same real cost-conscious decision and the same real deployment safety pattern, both proven twice now in this project.",
+      },
     ],
   },
 ]

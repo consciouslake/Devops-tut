@@ -18,8 +18,9 @@ export function ModuleOverview({
       <div className="eyebrow mono">CURRICULUM</div>
       <h1>Azure DevOps, module by module</h1>
       <p className="overview-sub">
-        Thirteen modules, in the order this plan tackles them — foundations before Azure,
-        Azure before advanced networking. Click a module to open its chapters. Content fills
+        Fourteen modules, in the order this plan tackles them — foundations before Azure,
+        Azure before advanced networking, with a final module showing the complete, real
+        architecture of everything built. Click a module to open its chapters. Content fills
         in as each module is actually studied.
       </p>
 

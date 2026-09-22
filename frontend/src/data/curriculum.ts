@@ -11,6 +11,7 @@ export interface Chapter {
   troubleshooting: string[]
   interview: string[]
   azureConnection: string
+  diagramId?: string
 }
 
 export interface Module {
@@ -2423,6 +2424,163 @@ export const modules: Module[] = [
         ],
         azureConnection:
           "This closes Module 12's actual outcome — \"understand when and how Front Door fits\" — with a real, specific answer grounded in this exact project's constraints and traffic shape, rather than a generic \"it depends\": it doesn't fit yet, here's precisely why, and here's precisely what would make it fit later.",
+      },
+    ],
+  },
+  {
+    id: 'system-architecture',
+    number: 14,
+    mono: 'AR',
+    title: 'System Architecture',
+    outcome: 'See the complete, real architecture of AzureOps Copilot as it actually runs today — the big picture, every layer, and each component broken down.',
+    chapters: [
+      {
+        id: 'architecture-system-overview',
+        title: 'The complete system, in one picture',
+        diagramId: 'system-overview',
+        concept:
+          "Everything built across Modules 1-13, shown as one diagram: a visitor's browser, the Azure subscription (with the k3s cluster and networking/identity layer each collapsed to one box — the next chapters expand both), and the one external dependency, Google's Gemini API. This is deliberately the highest possible zoom level — enough to see how the major pieces relate, not enough to see individual pods or NSG rules.",
+        whyDevops:
+          "Being able to draw the whole system from memory, at this level of zoom, is what separates \"I built a bunch of Azure resources\" from \"I understand the system I built\" — every chapter after this one exists to justify one box or one arrow in this picture with real detail.",
+        handsOn: [
+          { label: 'How to read this diagram', code: '// green  = self-hosted, $0 marginal cost (Traefik, k3s, the app itself)\n// blue   = Azure-managed (Key Vault, NAT Gateway, DNS, GitHub OIDC target)\n// red    = external, usage-billed (Gemini API)\n//\n// every arrow in this diagram is a real, currently-live connection --\n// verified end to end with real curl/wss requests, not just declared\n// in a manifest' },
+        ],
+        troubleshooting: [],
+        interview: [
+          'Walk through this diagram from memory: what are the major pieces, and what does each arrow represent?',
+        ],
+        azureConnection:
+          "Every box in this diagram is a real, currently-running thing — no placeholder, no 'planned' component — because this project's whole practice has been building and verifying each piece before documenting it.",
+      },
+      {
+        id: 'architecture-k8s-cluster',
+        title: 'Inside the Kubernetes cluster',
+        diagramId: 'k8s-cluster',
+        concept:
+          "Expanding the 'k3s Cluster' box from the previous chapter: the real 3-node HA cluster (Module 8), two namespaces, and — labeled explicitly, not just as generic boxes — the two real databases running in it: Qdrant (the vector database backing retrieval) and Loki (the log database backing Grafana's log view). Traefik sits in front of both namespaces on one public IP, routing by path (`/` to the app, `/grafana` to monitoring).",
+        whyDevops:
+          "Distinguishing an application workload from a database, at a glance, in a diagram, mirrors a distinction that matters operationally too — a database holds state that can't just be recreated from a Deployment spec, so it gets different backup/persistence/scaling treatment than a stateless pod, and a diagram that doesn't visually separate the two teaches the wrong mental model.",
+        handsOn: [
+          { label: 'Verifying this diagram against the real cluster', code: 'kubectl get pods -n azureops-copilot -o wide\nkubectl get pods -n monitoring -o wide\n# every box in this diagram maps to a real, currently-Running pod --\n# this isn\'t a planned architecture, it\'s what kubectl actually returns' },
+        ],
+        troubleshooting: [],
+        interview: [
+          'Why does this diagram use a different shape for Qdrant and Loki than for the application pods?',
+          'What would you check first if traffic to /grafana stopped working but / kept working fine?',
+        ],
+        azureConnection:
+          "This is the cluster built by hand in Module 8 specifically to learn what a managed control plane (AKS) would have hidden — every box here was provisioned, debugged, and verified manually at least once across this project.",
+      },
+      {
+        id: 'architecture-networking-identity',
+        title: 'Azure networking and identity',
+        diagramId: 'networking-identity',
+        concept:
+          "The Azure-side infrastructure underneath the cluster: 3 VMs across 2 peered regions, the NAT Gateway giving them real internet egress (added after decommissioning the Load Balancer broke it — Module 11), Key Vault, and DNS. The dashed arrow shows the actual secret-fetch mechanism: `app-vm1`'s Managed Identity requests a token from IMDS and uses it to read secrets from Key Vault — no credential is ever stored anywhere in this picture.",
+        whyDevops:
+          "This is the layer where real incidents in this project actually happened (the egress regression, the RBAC 403s, the VNet peering) — a diagram of it is only useful if it reflects the real, debugged topology, not an idealized one drawn before any of that was discovered.",
+        handsOn: [
+          { label: 'Confirming the Managed Identity path is real, not diagrammed as a guess', code: "# from inside a pod on app-vm1:\ncurl -H 'Metadata:true' \\\n  'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net'\n# real token, used to fetch GEMINI_API_KEY / JWT_SECRET at backend startup" },
+        ],
+        troubleshooting: [],
+        interview: [
+          'Why does app-vm2 not have an arrow to Key Vault in this diagram, even though it\'s in the same cluster?',
+        ],
+        azureConnection:
+          "Every resource in this diagram was created, and in several cases broken and fixed, in this exact project — the NAT Gateway specifically exists because deleting the Load Balancer silently removed this VNet's only path to the internet, a real regression documented in Module 11.",
+      },
+      {
+        id: 'architecture-request-flow',
+        title: 'Watch a real request travel through the system',
+        diagramId: 'request-flow',
+        concept:
+          "The one place in this module where motion actually adds information: a real `/chat` request's path, animated. The moving dot isn't decorative — it traces the literal sequence a request takes today: browser → Traefik/WAF → backend (rate-limit check) → Qdrant (vector search) → Gemini (generation) → back to the browser, streamed token by token. Key Vault is shown with a dashed connection since that fetch happens once at pod startup, not on every request.",
+        whyDevops:
+          "Static diagrams are good at showing *what exists*; this one is good at showing *what happens, in what order* — a genuinely different question, and the reason this is the only chapter in the module that animates anything.",
+        handsOn: [
+          { label: 'The real flow, verified end to end this session', code: 'curl -X POST https://devopspk.online/ingest -d \'{"text":"...", "source":"..."}\'\n# real WebSocket /chat query -- rate limiter checked, Qdrant searched,\n# Gemini streamed the answer back -- the exact sequence this diagram shows' },
+        ],
+        troubleshooting: [
+          'Assuming Key Vault is hit on every request → it\'s only read once, at pod startup (`config.py`); a request never touches Key Vault directly, which is exactly why that connection is drawn dashed and off the main animated path.',
+        ],
+        interview: [
+          'Why is the Key Vault connection in this diagram dashed while the rest of the request path is a solid, animated line?',
+          'What would this diagram look like differently for a cached, repeat request versus a first-time one? (Trick question — walk through why there\'s no cache in this path at all.)',
+        ],
+        azureConnection:
+          "This is the literal execution path verified with real `curl`/WebSocket requests throughout Modules 10-12 — not a description of intended behavior, the actual, tested request lifecycle of the live app.",
+      },
+      {
+        id: 'architecture-cicd',
+        title: 'How code gets from a merge to production',
+        diagramId: 'cicd-pipeline',
+        concept:
+          "The pipeline from a merged PR to a live change at `devopspk.online`, including the auto-redeploy step added after a real incident: for a while, a fresh image published to `ghcr.io` never actually reached the running pods, so Module 12's content sat stale in production until someone manually restarted them. `deploy`'s approval gate (Module 7) still requires a human to say go; what changed is what happens automatically once they do.",
+        whyDevops:
+          "A CI/CD diagram that stops at 'image published' is describing Continuous Integration, not Continuous Delivery — the real gap this project hit (a published image nobody told the cluster to pull) is exactly the kind of thing that's invisible until a real diagram, or a real user, forces you to trace the whole path.",
+        handsOn: [
+          { label: 'The real fix this diagram reflects', code: '# .github/workflows/ci.yml, deploy job, after the approval gate:\naz vm run-command invoke --name app-vm1 --command-id RunShellScript --scripts \\\n  "kubectl rollout restart deployment backend -n azureops-copilot\n   kubectl rollout restart deployment frontend -n azureops-copilot"\ncurl -sf https://devopspk.online/health   # real post-deploy verification' },
+        ],
+        troubleshooting: [],
+        interview: [
+          'Why does "the image is published" not mean "the change is live," and what closed that gap in this project?',
+        ],
+        azureConnection:
+          "This is a real, dated fix (added the same day the gap was found live on `devopspk.online`), using the OIDC identity's existing `Contributor` role — flagged as broader than necessary in Module 11's RBAC audit, and deliberately kept for exactly this kind of later automation.",
+      },
+      {
+        id: 'architecture-component-backend',
+        title: 'Component breakdown: the backend',
+        diagramId: 'component-backend',
+        concept:
+          "One level deeper than the system diagrams: what's actually inside a `backend` pod. `config.py` fetches secrets once at boot; `rate_limit.py` checks every `/ingest` and `/chat` call before any real work happens; `rag.py` does the actual RAG pipeline (embed → search Qdrant → generate via Gemini); `tracing.py` wraps all of it in OpenTelemetry spans sent to Tempo. This is the same information as the request-flow chapter, but organized by *module*, not by *request sequence*.",
+        whyDevops:
+          "Knowing both views — request-sequence and code-module — is what lets you answer both \"what happens when a user sends a message\" and \"which file do I open to fix the rate limiter\" without re-deriving one from the other every time.",
+        handsOn: [
+          { label: "The real files this diagram maps to", code: 'backend/\n  config.py      # secrets: Key Vault via Managed Identity, or .env locally\n  rate_limit.py  # sliding-window limiter, per client IP\n  main.py        # FastAPI routes: /health, /ingest, /chat\n  rag.py         # embed(), retrieve() -> Qdrant, generate() -> Gemini\n  tracing.py     # OpenTelemetry setup, exports to Tempo' },
+        ],
+        troubleshooting: [],
+        interview: [
+          'If a real user reported "the chat feature is slow," which of these components would you check first, and why?',
+        ],
+        azureConnection:
+          "Every one of these files exists in the real repo and was independently built, tested, and in several cases debugged live across Modules 4, 10, and 11 — this diagram is a map of real code, not an idealized one.",
+      },
+      {
+        id: 'architecture-component-frontend',
+        title: 'Component breakdown: the frontend',
+        diagramId: 'component-frontend',
+        concept:
+          "The `frontend` pod is a single nginx container serving the built React SPA (this exact curriculum browser and the AI Mentor widget) and doubling as the internal reverse proxy: `nginx.conf`'s `proxy_pass` rules forward `/ingest` and `/chat` to `backend:8000` over the cluster's internal network — the browser never talks to the backend pod directly, and the backend's Service is never exposed outside the cluster at all.",
+        whyDevops:
+          "This exact pattern — one container serving static assets and proxying API calls — has been in this project since Module 4's Docker Compose setup; nothing about moving it into Kubernetes changed the pattern, only where it runs.",
+        handsOn: [
+          { label: 'The real nginx.conf rules this diagram reflects', code: 'location /chat {\n  proxy_pass http://backend:8000;\n  proxy_http_version 1.1;\n  proxy_set_header Upgrade $http_upgrade;   # WebSocket upgrade\n  proxy_set_header Connection "upgrade";\n}' },
+        ],
+        troubleshooting: [],
+        interview: [
+          'Why does the WebSocket proxy rule need explicit Upgrade/Connection headers when the plain HTTP proxy rules for /ingest don\'t?',
+        ],
+        azureConnection:
+          "This is why the backend's Kubernetes Service never needed its own Ingress rule at all — every external request reaches it exclusively through this nginx proxy layer, one hop inside the cluster.",
+      },
+      {
+        id: 'architecture-component-monitoring',
+        title: 'Component breakdown: monitoring and tracing',
+        diagramId: 'component-monitoring',
+        concept:
+          "The self-hosted PLG (Prometheus/Loki/Grafana) stack plus Tempo, all real data paths: node-exporter and kube-state-metrics feed Prometheus; Promtail feeds Loki; the backend's own OTel SDK feeds Tempo; Prometheus feeds Alertmanager, which feeds a real webhook receiver. Grafana ties all three databases together as datasources at `/grafana`. Every one of these arrows was independently verified this project — including the real incident (Module 10) where a Helm chart's own auto-generated datasource silently conflicted with this exact wiring.",
+        whyDevops:
+          "A monitoring stack diagram that only shows \"metrics go to Grafana\" hides the actual failure modes — this one shows the real collectors, the real storage backends, and the real alert-routing path, because that's the level of detail needed to actually debug it when something in this chain breaks.",
+        handsOn: [
+          { label: 'Verifying this exact wiring against the real stack', code: "curl -s http://<grafana-ip>/api/datasources\n# Alertmanager, Loki, Prometheus (default), Tempo -- all four,\n# exactly as this diagram shows, confirmed via the real Grafana API" },
+        ],
+        troubleshooting: [],
+        interview: [
+          'Trace the path a single log line takes from a pod\'s stdout to being visible in Grafana, using this diagram.',
+        ],
+        azureConnection:
+          "$0 marginal cost for this entire stack — reusing compute already paid for since Module 8, the direct payoff of every self-hosted decision made across Modules 10 and 11.",
       },
     ],
   },

@@ -1,4 +1,5 @@
 import { Chapter } from '../data/curriculum'
+import { Diagram } from './diagrams/DiagramRegistry'
 
 export function ChapterDetail({ chapter, order }: { chapter: Chapter; order: number }) {
   return (
@@ -7,6 +8,8 @@ export function ChapterDetail({ chapter, order }: { chapter: Chapter; order: num
         <div className="eyebrow mono">CHAPTER {String(order).padStart(2, '0')}</div>
         <h1>{chapter.title}</h1>
         <p className="topic-desc">{chapter.concept}</p>
+
+        {chapter.diagramId && <Diagram id={chapter.diagramId} />}
 
         <div className="section-label">Why DevOps needs this</div>
         <p className="topic-desc">{chapter.whyDevops}</p>

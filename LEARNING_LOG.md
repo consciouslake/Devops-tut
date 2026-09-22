@@ -1702,3 +1702,32 @@ kubectl logs backend-<pod-2> -n azureops-copilot --since=20s | grep -c health   
 - A real, concrete example of a constraint added for one reason (Key Vault access, node-pinning) having a real, unrelated side effect later (limiting replica spread) — worth checking `kubectl get pods -o wide` after any scale-up rather than assuming replicas landed usefully spread out just because the replica count looks right.
 
 **Cost check:** $0 — one extra pod each for `backend` and `frontend`, same VMs already paid for. No new Azure resource.
+
+## Module 14 — System Architecture, real diagrams built into the frontend — 2026-09-22
+
+**Plan item(s):** User asked for a new 14th module showing the complete architecture, with individual component breakdowns, and asked directly whether Three.js would be advisable for animating the architecture and flow.
+
+**What I did:**
+- Answered the Three.js question directly before building anything: not advisable — architecture diagrams are 2D relationship information ("A calls B"), and a 3D scene adds real cost (WebGL context, camera controls, raycasting, bundle size) without adding real understanding; every serious architecture-diagramming tool in real use (draw.io, Lucidchart, Azure/AWS reference diagrams, Mermaid) is 2D for exactly this reason. Recommended animated SVG/CSS instead for the one place motion genuinely helps (showing a request's real path).
+- Read the actual frontend code first (`App.tsx`, `ModuleDetail.tsx`, `ChapterDetail.tsx`, `curriculum.ts`) before deciding how this should fit in, rather than bolting on a separate page — the existing `Chapter` schema is purely text-based (concept/whyDevops/handsOn/troubleshooting/interview/azureConnection), so extended it with one new optional field, `diagramId`, rather than forking the render path.
+- Built a shared SVG primitive library (`DiagramShared.tsx`: `Node`, `DbNode` for cylinder-shaped database nodes, `GroupBox` for cluster/namespace boundaries, `Arrow`, a shared color-token set matching this app's own dark theme) so every diagram stays visually consistent without duplicating SVG boilerplate eight times.
+- Built 8 real diagram components, each reflecting actual, currently-running infrastructure rather than an idealized or planned architecture: system overview, inside the k3s cluster (with Qdrant/Loki explicitly labeled as databases via the cylinder shape, not generic boxes — the same clarity fix already made once in an earlier Artifact this session), Azure networking/identity, the CI/CD pipeline (including the real auto-redeploy fix from earlier in this session), an animated request-flow diagram, and three component-level breakdowns (backend, frontend, monitoring stack).
+- The one animated diagram uses native SVG `<animateMotion>` (a moving dot tracing the real request path) plus a CSS `stroke-dashoffset` keyframe animation on the connecting line — zero new dependencies, respects `prefers-reduced-motion`.
+- Wrote all 8 chapters into `curriculum.ts` as Module 14, each grounded in real, previously-verified facts from this session (the egress regression, the datasource conflict, the CI redeploy fix, the real `nginx.conf` WebSocket proxy rules) rather than generic descriptions.
+- Found and fixed a real, unrelated bug while wiring this up: `ModuleOverview.tsx` had a hardcoded "Thirteen modules" string in its subtitle, now stale with a 14th module added — updated it.
+- Verified as thoroughly as possible without a browser: `tsc --noEmit` clean, a full production `vite build` clean (no warnings, 47 modules transformed), and — since no screenshot/browser-automation tool is available in this environment — confirmed structurally by grepping the actual compiled bundle for real content strings (`"System Architecture"`, `"Why these diagrams are 2D"`, `animateMotion`, `system-overview`) rather than just trusting the build succeeded. Explicitly flagged to the user that visual rendering still needs their own confirmation in a real browser, consistent with this project's standing practice of never claiming UI success without saying so honestly when it can't be directly verified.
+
+**Commands used:**
+```bash
+npx tsc --noEmit                      # clean
+npm run build                         # clean, 47 modules, no warnings
+curl -s http://localhost:5173/ | grep -oE 'src="[^"]*\.js"'
+curl -s http://localhost:5173/assets/<bundle>.js | grep -oE "System Architecture|animateMotion|system-overview"
+# confirmed real content present in the actual compiled output
+```
+
+**What broke / what I learned:**
+- Nothing broke, but this was a case where the honest limitation (no browser screenshot tool in this environment) needed to be stated plainly rather than papered over with "should work" confidence — structural verification (bundle content, clean build) is real evidence, but it isn't the same as seeing it render.
+- Extending an existing, working data schema with one new optional field (`diagramId?: string`) was less invasive and more consistent with the rest of the app than building a separate, one-off page for this module — the existing chapter navigation, AI Mentor context-awareness, and text-content rendering all kept working unchanged for Module 14 without any special-casing.
+
+**Cost check:** $0 — pure frontend code, zero new npm dependencies, no new Azure resource. The diagrams describe existing infrastructure; nothing new was provisioned to build this module.

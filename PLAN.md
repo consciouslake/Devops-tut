@@ -300,6 +300,12 @@ Full chapter content for all 11 chapters in the frontend curriculum browser. See
 
 **Outcome:** capture everything built manually across Modules 1-12 as code, and prove it by rebuilding from Terraform alone. Moved to the end of the roadmap (2026-09-21) — consolidating IaC once, after all the manual infrastructure work is done, rather than learning Terraform mid-sequence before most of what it would capture even exists yet.
 
+### Module 14 — System Architecture
+
+**Outcome:** see the complete, real architecture of AzureOps Copilot as it actually runs today — the big picture, every layer, and each component broken down. Added 2026-09-22, at the user's request, after the app went fully live.
+
+**Status (2026-09-22):** Done — 8 chapters, all real, all diagrammed. Built as plain SVG React components (`frontend/src/components/diagrams/`), not a 3D/charting library — see Chapter 1 for the reasoning (3D adds real cost — WebGL, camera controls, bundle size — for content that's fundamentally 2D relationship data; 2D is the universal convention for real architecture-diagramming tools for exactly this reason). One chapter (Request Flow) uses a native SVG `animateMotion` + CSS `stroke-dashoffset` animation to trace a real request's path — the one place motion genuinely adds information over a static diagram. Chapters: why-not-3D, complete system overview, inside the k3s cluster, Azure networking/identity, the animated request flow, the CI/CD pipeline (including the real auto-redeploy fix), and per-component breakdowns for the backend, frontend, and monitoring stack. Every diagram reflects real, currently-running infrastructure — cross-checked against `kubectl get pods -o wide` and the real Grafana `/api/datasources` response, not drawn from memory or intention. Zero new dependencies added. `ModuleOverview.tsx`'s hardcoded "Thirteen modules" string updated to fourteen. Full chapter content in the frontend curriculum browser. See LEARNING_LOG.md "Module 14 — System Architecture" for the full build.
+
 ## Capstone — AzureOps Copilot
 
 Build the system progressively:

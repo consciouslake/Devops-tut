@@ -1047,4 +1047,50 @@ curl -s -u admin:$PW -X POST http://<grafana-ip>/api/dashboards/db --data-binary
 - **Grafana `CrashLoopBackOff` after wiring Loki in:** the sidecar's live-reload API call to Grafana returned 500s, so I restarted the deployment to force a fresh provisioning read at pod startup — the new pod then crash-looped with `"Only one datasource per organization can be marked as default"` while the old pod stayed correctly healthy (same safe-rollout behavior already demonstrated in Module 8 Ch 10). Listing ConfigMaps with the `grafana_datasource=1` label surfaced a THIRD, unexpected one — `loki-loki-stack`, auto-created by the `loki-stack` Helm chart itself despite `grafana.enabled=false` in the install values — and it set `isDefault: true`, directly conflicting with `kube-prometheus-stack`'s own default Prometheus datasource. Deleting the redundant chart-generated ConfigMap (keeping only my own hand-authored `loki-datasource` with `isDefault: false`) fixed it — verified by a clean `kubectl rollout status` and a re-query of `/api/datasources` showing all three correctly registered.
 - Minor false start along the way: guessed a ConfigMap name (`loki-grafana-datasource`) that didn't exist before finding the real name (`loki-loki-stack`) in the actual `kubectl get configmap` listing — a reminder to read the prior command's real output rather than assume a plausible name.
 
-**Cost check:** $0 marginal spend — the entire PLG stack (Prometheus, Grafana, Alertmanager, Loki, Promtail) runs on the 3 k3s nodes already provisioned and paid for in Module 8. No Azure Monitor, Log Analytics, Managed Grafana, or Application Insights resource created. Deferred to a later session: OpenTelemetry tracing for the `/chat` path + self-hosted Tempo/Jaeger, and real Alertmanager alert rules.
+**Cost check:** $0 marginal spend — the entire PLG stack (Prometheus, Grafana, Alertmanager, Loki, Promtail) runs on the 3 k3s nodes already provisioned and paid for in Module 8. No Azure Monitor, Log Analytics, Managed Grafana, or Application Insights resource created. Deferred to a later session: OpenTelemetry tracing for the `/chat` path + self-hosted Tempo/Jaeger.
+
+## Module 10 (continued) — Exposing Grafana publicly + a real Alertmanager pipeline — 2026-09-22
+
+**Plan item(s):** User asked to actually view the dashboard in a browser, then asked to continue with the deferred Alertmanager work.
+
+**What I did — public Grafana access:**
+- Checked exposure: Grafana was `ClusterIP`-only, no Ingress, nothing reachable outside the cluster.
+- Found `azureops-vm01` already had a public IP (`20.235.48.180`, reused from Phase 1 — no new cost) and confirmed Traefik (k3s's bundled Ingress controller) was already listening on port 80/443 across all 3 nodes via its ServiceLB.
+- This is a public-exposure action, so I paused and used AskUserQuestion before proceeding (blocked once by the auto-mode permission classifier first) — user chose "Public Ingress + NSG rule."
+- Created a host-less `Ingress` (`grafana-ingress`, matches all traffic on port 80) routing to `monitoring-grafana`, and one new NSG rule (`allow-http-grafana`, port 80, priority 850) on `azureops-vm01NSG`.
+- Verified: `curl http://20.235.48.180/login` → `HTTP 200`. User confirmed logging in with the real Helm-generated admin credentials (`admin` / `azureops-demo-2026`, pulled from the live Kubernetes Secret) worked.
+
+**What I did — real Alertmanager routing:**
+- Checked what `kube-prometheus-stack` already bundles: `KubePodCrashLooping`, `KubeNodeNotReady`, `KubeNodeUnreachable` were already present as default `PrometheusRule` objects — no new alert rules needed.
+- Found the real gap: Alertmanager's default config routes every alert to a `"null"` receiver — alerts fire but produce zero observable effect.
+- Deployed a minimal in-cluster webhook receiver (a ~20-line Python `http.server` Deployment + Service, `alert-webhook-log`, $0 cost) that logs any POST body it receives.
+- Patched the `alertmanager-monitoring-kube-prometheus-alertmanager` Secret directly (kube-prometheus-stack didn't have a custom `alertmanager.config` set at install time) to add a `webhook-log` receiver and route `alertname=~"KubePodCrashLooping|KubeNodeNotReady|KubeNodeUnreachable"` to it. Verified the config actually reloaded via Alertmanager's own `/api/v2/status` endpoint before trusting it.
+- **Verification 1 (synthetic):** POSTed a synthetic alert directly to Alertmanager's `/api/v2/alerts` API — got `HTTP 200`, and the webhook receiver's logs showed the full payload, correctly routed (`groupKey` matched the intended route).
+- **Verification 2 (real):** created a deliberately-crashing test Deployment (`busybox` running `exit 1`). It took a few restart cycles before Kubernetes actually marked it `CrashLoopBackOff` (initially just showed `Error`) — confirmed the real condition (`waiting.reason == CrashLoopBackOff`) that `KubePodCrashLooping`'s PromQL expression watches for was genuinely met, right before cleaning up the test deployment.
+
+**Commands used:**
+```bash
+# Ingress + NSG (after explicit user confirmation)
+kubectl apply -f grafana-ingress.yaml   # host-less Ingress -> monitoring-grafana:80
+az network nsg rule create --nsg-name azureops-vm01NSG --name allow-http-grafana \
+  --priority 850 --protocol Tcp --destination-port-ranges 80 --access Allow --direction Inbound
+
+# Alertmanager webhook receiver + routing
+kubectl apply -f webhook-receiver.yaml   # Deployment + Service, alert-webhook-log
+kubectl create secret generic alertmanager-monitoring-kube-prometheus-alertmanager \
+  --from-file=alertmanager.yaml=alertmanager.yaml -n monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+# Verification
+curl -X POST http://<alertmanager-ip>:9093/api/v2/alerts --data-binary @test-alert.json
+kubectl logs -n monitoring -l app=alert-webhook-log
+kubectl create deployment alert-test-crash --image=busybox -n monitoring -- sh -c 'exit 1'
+kubectl get pod -n monitoring -l app=alert-test-crash   # eventually: CrashLoopBackOff
+kubectl delete deployment alert-test-crash -n monitoring
+```
+
+**What broke / what I learned:**
+- The classifier correctly blocked my first attempt to apply the public Ingress + NSG change autonomously — exposing a service to the internet is exactly the kind of action that needs explicit confirmation, not just a general "continue" instruction. Used AskUserQuestion, got an explicit choice, then proceeded.
+- A freshly-failing pod shows `STATUS: Error`, not `CrashLoopBackOff`, for the first restart or two — checking immediately after creating a test failure can look like the alert condition isn't met yet when it just hasn't reached the backoff state.
+- Editing the Alertmanager Secret directly works for real, immediate verification, but a future `helm upgrade` on this release would silently overwrite it — for anything meant to persist long-term, this belongs in the chart's `alertmanager.config` Helm values instead of a live `kubectl` patch.
+
+**Cost check:** $0 marginal spend — the public Grafana Ingress reuses `azureops-vm01`'s existing public IP and Traefik (both already in place), and the webhook receiver is a single lightweight pod on the existing cluster. No Azure Front Door, Application Gateway, or Action Group was created.

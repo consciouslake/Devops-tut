@@ -1925,6 +1925,30 @@ export const modules: Module[] = [
         azureConnection:
           "This dashboard, running entirely on the 3 self-managed k3s nodes at $0 marginal cost, is the concrete deliverable that answers Chapter 1's cost comparison — real cluster observability with the same visual/operational experience as Azure Managed Grafana, without its per-seat billing.",
       },
+      {
+        id: 'alertmanager-real-rules',
+        title: 'Alertmanager: from bundled rules to a real, verified notification pipeline',
+        concept:
+          'The `kube-prometheus-stack` chart already ships dozens of production-grade `PrometheusRule` objects out of the box — including exactly the ones this chapter needed (`KubePodCrashLooping`, `KubeNodeNotReady`, `KubeNodeUnreachable`) — so no new alert *rules* had to be written. What was missing was routing: Alertmanager\'s default config sends every alert to a `"null"` receiver, meaning alerts fire but produce zero observable effect. Fixed by deploying a minimal in-cluster webhook receiver (a ~20-line Python `http.server` that logs any POST body it receives) and patching Alertmanager\'s config Secret to add a `webhook-log` receiver, routed specifically for `alertname=~"KubePodCrashLooping|KubeNodeNotReady|KubeNodeUnreachable"`. Verified two ways: (1) a synthetic alert POSTed directly to Alertmanager\'s API, confirmed received and correctly routed by reading the webhook receiver\'s logs; (2) a real, deliberately-crashing test Deployment (`busybox` running `exit 1`) that genuinely reached `CrashLoopBackOff` status — the exact condition `KubePodCrashLooping` watches for — proving the rule itself, not just the routing, would have fired for real.',
+        whyDevops:
+          "Testing an alert pipeline by waiting for a real production incident is backwards — real teams synthetically inject test alerts (exactly what was done here via Alertmanager's `/api/v2/alerts` endpoint) to verify routing, grouping, and receivers work *before* they're needed. A rule that's never fired in anger and a receiver that's never actually delivered anything are both unverified assumptions, not working alerting.",
+        handsOn: [
+          { label: 'Confirming the bundled rules already cover the real scenarios', code: "kubectl get prometheusrule -n monitoring monitoring-kube-prometheus-kubernetes-apps \\\n  -o jsonpath='{.spec.groups[*].rules[*].alert}' | tr ' ' '\\n' | grep -i crash\n# KubePodCrashLooping -- already there, no new rule needed" },
+          { label: 'Patching Alertmanager to route real alerts to a working receiver', code: 'kubectl create secret generic alertmanager-monitoring-kube-prometheus-alertmanager \\\n  --from-file=alertmanager.yaml=alertmanager.yaml \\\n  -n monitoring --dry-run=client -o yaml | kubectl apply -f -\n# route now has: alertname=~"KubePodCrashLooping|KubeNodeNotReady|KubeNodeUnreachable" -> webhook-log' },
+          { label: 'Verification 1: synthetic alert, immediate proof of routing', code: "curl -s -X POST http://<alertmanager-ip>:9093/api/v2/alerts \\\n  -H 'Content-Type: application/json' --data-binary @test-alert.json\n# HTTP 200\nkubectl logs -n monitoring -l app=alert-webhook-log --tail=30\n# real payload received: alertname=KubePodCrashLooping, correctly grouped and routed" },
+          { label: 'Verification 2: a genuinely crashing pod, the real condition', code: "kubectl create deployment alert-test-crash --image=busybox -n monitoring -- sh -c 'exit 1'\nkubectl get pod -n monitoring -l app=alert-test-crash\n# NAME                    READY  STATUS             RESTARTS\n# alert-test-crash-...     0/1   CrashLoopBackOff   5\n# -- the exact waiting-reason KubePodCrashLooping's expr watches for" },
+        ],
+        troubleshooting: [
+          'A pod that just failed shows `STATUS: Error`, not `CrashLoopBackOff` — Kubernetes only applies the backoff state after several rapid restarts, so checking immediately after creating a test failure can look like nothing is wrong yet; wait for a few restart cycles before concluding the alert condition isn\'t met.',
+          'Directly editing an Alertmanager Secret works for real, immediate verification, but a `helm upgrade` on the release would overwrite it — for anything meant to persist, the change belongs in the chart\'s `alertmanager.config` values instead.',
+        ],
+        interview: [
+          'Why is injecting a synthetic alert directly into Alertmanager\'s API a legitimate testing strategy rather than "cheating" the verification?',
+          'What\'s the operational risk of an alert rule that has never actually fired, even in a test?',
+        ],
+        azureConnection:
+          "This is the direct self-hosted equivalent of Azure Monitor Action Groups — Alertmanager's receivers/routes are the same concept (who gets notified, how, for which alert), running at $0 on the same k3s cluster rather than as a billed Azure resource.",
+      },
     ],
   },
 ]

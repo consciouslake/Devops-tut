@@ -1582,3 +1582,53 @@ openssl s_client -connect 20.235.48.180:443 -servername devopspk.online | openss
 - Verified DNS propagation status via TWO independent resolvers (not just one) before concluding it hadn't happened yet — a single resolver could be showing stale cached data specific to that resolver, not the real global state.
 
 **Cost check:** $0 — the DNS zone and Let's Encrypt certificate are both free; Front Door was never actually created (blocked by the subscription restriction), so no cost was incurred there either despite the user's willingness to accept it.
+
+## devopspk.online goes fully live — real Let's Encrypt cert, a real race condition found and fixed — 2026-09-22
+
+**Plan item(s):** User confirmed the registrar had saved the NS record change (screenshot of GoDaddy's nameserver panel showing the 4 real Azure nameservers), then reported `https://devopspk.online` showing a browser cert warning. Picked up from there to finish real TLS verification.
+
+**What I did:**
+- Confirmed DNS had genuinely propagated: `nslookup -type=NS devopspk.online 8.8.8.8` now showed Azure's real nameservers (previously GoDaddy's), and the plain `A` record resolved correctly too.
+- Checked the actual served certificate (`openssl s_client -servername devopspk.online | openssl x509 -noout -issuer`) — still Traefik's own `TRAEFIK DEFAULT CERT`, confirming the real cert hadn't issued yet despite DNS being ready.
+- Read Traefik's own logs directly rather than guessing why: found a real, specific error — Let's Encrypt's HTTP-01 validator reached the real server (`20.235.48.180`) but got a `403`/later a `404` for its own challenge token, meaning something was actively wrong with challenge-serving, not just "still waiting."
+- A manual `curl` to a fake challenge token got a clean `404` from what looked like Traefik's own internal ACME handler (not the WAF or app), which seemed to rule out routing/WAF interference — but that only proved the *routing* worked, not that the *real* token state was consistent.
+- **Root cause found by isolating variables, not guessing**: the Ingress had two separate host-based rules (`devopspk.online`, `www.devopspk.online`), and — because the cert-resolver annotation applies at the whole-Ingress level, not per-`tls.hosts` entry — *both* rules independently triggered their own concurrent ACME certificate request through the same Traefik resolver instance. Confirmed by first removing `www` from `tls.hosts` alone (no change — the annotation still applied via the separate host *rule*, proving the hosts list wasn't the actual scope boundary), then removing the `www` rule from the Ingress entirely and testing with just the apex domain — **that succeeded immediately** (`"Validations succeeded; requesting certificates."` → `"Server responded with a certificate."`), confirming the two-domain concurrency was the real problem, not DNS, not the WAF, not Traefik's basic ACME wiring.
+- Fixed properly, not just by dropping `www`: replaced the two-Ingress approach with a single Traefik `IngressRoute` CRD combining both hostnames into one rule (`Host(\`devopspk.online\`) || Host(\`www.devopspk.online\`)`) and one `tls.domains` block (`main` + `sans`) — this requests **one** SAN certificate covering both names in a single ACME transaction instead of two racing ones. Verified immediately: clean issuance, no errors, both hostnames present in the resulting certificate's SAN list.
+- Full verification, not just "the log said success": `openssl s_client` confirmed `issuer=C=US, O=Let's Encrypt`, both `devopspk.online` and `www.devopspk.online` resolve over real HTTPS with `200`, a real `/ingest` POST succeeded over `https://`, and a real WebSocket `/chat` query succeeded over `wss://` (working around two more local DNS-caching red herrings along the way — my own machine's resolver and the backend container's resolver were both still serving stale cached results pointing at GoDaddy's parking page, confirmed as purely local by cross-checking against `8.8.8.8` and by using `curl --resolve` / a temporary container `/etc/hosts` entry to bypass the stale cache directly rather than waiting on it). Bare-IP access (`http://20.235.48.180/`) reconfirmed unaffected throughout every change.
+
+**Commands used:**
+```bash
+nslookup -type=NS devopspk.online 8.8.8.8            # confirmed propagated
+openssl s_client -connect 20.235.48.180:443 -servername devopspk.online | openssl x509 -noout -issuer
+# still TRAEFIK DEFAULT CERT at first
+
+kubectl logs -n kube-system -l app.kubernetes.io/name=traefik --tail 100 | grep -i acme
+# real 403/404 errors, specific and actionable
+
+# isolating the real cause
+# 1. removed www from tls.hosts only -> still failed (annotation is Ingress-scoped)
+# 2. removed the www host RULE entirely, apex only -> succeeded immediately
+
+# the real fix: one IngressRoute, one SAN cert request
+kubectl apply -f ingress-tls-domain.yaml   # IngressRoute, Host(...) || Host(...), tls.domains main+sans
+kubectl rollout restart deployment traefik -n kube-system
+
+openssl s_client -connect 20.235.48.180:443 -servername devopspk.online -showcerts 2>/dev/null | openssl x509 -noout -ext subjectAltName
+# DNS:devopspk.online, DNS:www.devopspk.online -- real cert, both names
+
+curl --resolve devopspk.online:443:20.235.48.180 https://devopspk.online/         # HTTP 200
+curl --resolve www.devopspk.online:443:20.235.48.180 https://www.devopspk.online/ # HTTP 200
+curl --resolve devopspk.online:443:20.235.48.180 -X POST https://devopspk.online/ingest -d '...'
+# real ingest, real HTTPS
+
+# local DNS cache workarounds for final verification
+docker compose exec -u root backend sh -c "echo '20.235.48.180 devopspk.online' >> /etc/hosts"
+# real wss://devopspk.online/chat query -- succeeded, valid TLS handshake
+```
+
+**What broke / what I learned:**
+- A cert-resolver annotation on a Kubernetes `Ingress` applies to *every* router the Ingress generates, not just the hosts listed in its `tls.hosts` block — a genuinely non-obvious scope boundary that caused a misleading first isolation test (removing from `tls.hosts` alone changed nothing, because the actual second router still existed via its own `host` rule).
+- Two concurrent ACME certificate requests through the same Traefik resolver instance can race and both fail, even though each one *looks* like an independent, well-formed request in the logs — the fix isn't "wait and retry," it's structurally requesting one SAN certificate instead of N separate ones for related hostnames.
+- Hit three separate, unrelated instances of stale local DNS caching in one session (my machine's resolver, the backend container's resolver, and — earlier — the registrar propagation delay itself) — each required a different, specific way of bypassing the cache to get a trustworthy read of the real, current state (`nslookup` against `8.8.8.8` directly, `curl --resolve`, a temporary container `/etc/hosts` entry) rather than assuming the first negative result was the final answer.
+
+**Cost check:** $0 — the real, trusted TLS certificate cost nothing (Let's Encrypt), and no Azure resource was created beyond the DNS zone already priced in the previous entry. `devopspk.online` and `www.devopspk.online` are now genuinely, verifiably live in production with valid HTTPS.

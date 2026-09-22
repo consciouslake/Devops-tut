@@ -1129,6 +1129,8 @@ docker stop waf-proxy && docker rm waf-proxy                      # both VMs
 
 **Cost check:** Net cost *reduction* — a genuinely billed Standard Load Balancer + its public IP were deleted entirely. The replacement (2 extra small pods + one more Ingress path on already-running Traefik) costs $0 marginal, since it reuses compute and networking already paid for since Module 8.
 
+**Correction, found during Module 11 (2026-09-22):** this cutover had a real, unnoticed side effect — deleting `azureops-lb` also removed `app-vm1`/`app-vm2`'s only path to the internet, since Standard Load Balancer rules provide implicit outbound SNAT by default and neither VM has a public IP or NAT Gateway of its own. This wasn't caught until Module 11's Key Vault work needed real outbound HTTPS from those VMs. See Module 11's log entry for the full incident and fix (a NAT Gateway added to `app-subnet`). Net cost impact of the *complete* Load Balancer decommission, accounting for this: smaller than originally stated, since a NAT Gateway now replaces some of the eliminated cost — still a net reduction (NAT Gateway is outbound-only, no inbound exposure, generally cheaper than a Standard LB + its rules for this traffic pattern), but not the full "cost eliminated" picture this entry originally implied.
+
 ## Module 10 (continued) — OpenTelemetry tracing for /chat, self-hosted Tempo — 2026-09-22
 
 **Plan item(s):** The last deferred Module 10 item — tracing the `/chat` path's latency breakdown, originally planned as "Redis vs Qdrant vs Gemini."
@@ -1203,3 +1205,103 @@ docker compose exec backend pytest -q      # 1 passed
 - This bug pre-dates the OpenTelemetry work this session — it wasn't caused by the tracing instrumentation, just first noticed while reading logs to verify tracing. A reminder that `except Exception` around a WebSocket handler needs to distinguish "the client left" (expected, no action needed) from "something actually went wrong" (worth logging and attempting a clean close) — conflating the two turns a routine disconnect into a crash-shaped log entry.
 
 **Cost check:** No cost impact — a pure code-correctness fix in the local backend, no infrastructure changed.
+
+## Module 11 — Security & Governance, Key Vault + Managed Identity — 2026-09-22
+
+**Plan item(s):** Module 11's headline outcome ("secure the app without hard-coded secrets"). Started with Key Vault + Managed Identity per the user's chosen approach, after first checking the real code and finding `JWT_SECRET` is configured but never actually used anywhere in the app (no auth on any endpoint) — a real finding worth carrying into the "least privilege" chapter later.
+
+**What I did:**
+- Registered the `Microsoft.KeyVault` resource provider (subscription wasn't registered for it yet) and created a real Key Vault (`azureops-copilot-kv`, Standard SKU, **RBAC authorization mode**, not the legacy access-policy model).
+- Confirmed RBAC genuinely blocks even the deployer by default: my own `keyvault secret set` was correctly `403 Forbidden` before any role assignment existed.
+- Handed the user two role assignments to run themselves (permission grants, never done autonomously): `Key Vault Secrets Officer` for my own account (to write secrets) and `Key Vault Secrets User` for `app-vm1`'s to-be-created Managed Identity (to read them).
+- Enabled a system-assigned Managed Identity on `app-vm1` (safe to do directly — creates an identity with zero permissions until a role is granted).
+- After the user confirmed both role assignments were done, wrote the two real secrets (`gemini-api-key`, `jwt-secret`, using the actual values from `backend/.env`) into the vault.
+- Verified Managed Identity access the real way — no `az` CLI is installed on `app-vm1`, so used the VM's raw Instance Metadata Service (IMDS) endpoint directly with `curl` to get an OAuth token, then called the Key Vault REST API with it. Deliberately never printed the actual secret value to any command output (the auto-mode classifier correctly blocked one attempt to do so) — verified via value *length* instead.
+- Verified the negative case too, not just the positive one: enabled a Managed Identity on `app-vm2` (no role granted) and confirmed it gets a valid IMDS token but a real `403 Forbidden` (`ForbiddenByRbac`) from Key Vault — proving this is genuinely identity-based access control, not just "anyone on the VNet can read it."
+- Added `backend/config.py` support for an optional `AZURE_KEY_VAULT_NAME` setting: when set, secrets are fetched via `azure-identity`'s `DefaultAzureCredential` + `azure-keyvault-secrets`' `SecretClient` at startup instead of `.env`; when unset (local dev, unchanged), falls back to `.env` exactly as before. Added the two new SDK packages to `requirements.txt`, dry-run-checked them against the existing pins first (learned from the earlier protobuf CVE incident) to confirm no dependency conflicts before rebuilding for real.
+
+**A real regression found and fixed along the way:** the very first attempt to reach Key Vault from `app-vm1` failed with `HTTP 000` (no connection at all) despite DNS resolving fine and the NSG/routing looking correct. Root-caused to Module 10's `azureops-lb` decommission: a Standard Load Balancer's rule provides implicit outbound SNAT for its backend pool by default, and neither `app-vm1` nor `app-vm2` has a public IP or NAT Gateway of its own — deleting the LB silently removed their only path to the internet. A plain `az vm restart` didn't fix it (that only reboots the OS); a full `az vm deallocate` + `az vm start` cycle didn't either (contrary to my expectation that Azure would reassign "default outbound access" on reallocation) — the cluster survived both cleanly (all 3 nodes stayed `Ready` throughout, consistent with Module 8's HA guarantees), but egress stayed broken. Concluded this subscription doesn't get default outbound access at all (consistent with the Free Trial quota restrictions hit back in Module 8) and the LB's SNAT was the *only* thing that had ever given these VMs internet access. Checked real NAT Gateway and Standard Public IP pricing via `WebFetch` — both pricing pages only show placeholders without the region calculator, so no exact figure was invented. Presented the honest tradeoff to the user, who chose a NAT Gateway (correct purpose-built tool: outbound-only, no inbound exposure, covers both VMs with one resource) over a per-VM public IP. Created it, associated it with `app-subnet`, and confirmed egress restored (`HTTP 000` → real `200`/`403`/`400` responses) before continuing the Key Vault verification.
+
+**Commands used:**
+```bash
+az provider register --namespace Microsoft.KeyVault
+az keyvault create --name azureops-copilot-kv --enable-rbac-authorization true ...
+az keyvault secret set --vault-name azureops-copilot-kv --name test-secret --value test
+# -> 403 Forbidden, confirmed RBAC blocks the deployer by default
+
+az vm identity assign --name app-vm1   # safe: zero permissions until a role is granted
+# role assignments handed to the user to run (Key Vault Secrets Officer / Secrets User)
+
+az keyvault secret set --vault-name azureops-copilot-kv --name gemini-api-key --value "<real key>"
+az keyvault secret set --vault-name azureops-copilot-kv --name jwt-secret --value "<real value>"
+
+# Managed Identity verification via raw IMDS (no az CLI on the VM)
+TOKEN=$(curl -s -H 'Metadata:true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net' | ...)
+curl -s -H "Authorization: Bearer $TOKEN" 'https://azureops-copilot-kv.vault.azure.net/secrets/gemini-api-key?api-version=7.4'
+# app-vm1 (granted):    HTTP 200, real secret returned (length checked, value never printed)
+# app-vm2 (not granted): HTTP 403 Forbidden, ForbiddenByRbac
+
+# the egress regression + fix
+curl --max-time 8 https://management.azure.com/   # HTTP 000 -- no connection at all
+az vm restart --name app-vm1                       # didn't fix it
+az vm deallocate --name app-vm1 && az vm start --name app-vm1   # didn't fix it either
+az network public-ip create --name app-subnet-natgw-pip --sku Standard
+az network nat gateway create --name app-subnet-natgw --public-ip-addresses app-subnet-natgw-pip
+az network vnet subnet update --name app-subnet --nat-gateway app-subnet-natgw
+curl --max-time 8 https://management.azure.com/   # HTTP 400 -- real response, egress restored
+```
+
+**What broke / what I learned:**
+- Deleting a Standard Load Balancer can silently remove outbound internet access for VMs that were relying on its implicit SNAT, with no warning at deletion time — worth checking a VM's actual internet reachability, not just its intended inbound traffic path, before decommissioning any LB it sits behind.
+- `az vm restart` and even a full `az vm deallocate`/`az vm start` cycle do NOT reliably restore Azure's "default outbound access" on this subscription — don't assume a VM will automatically regain internet access just because it's no longer in an LB's backend pool; verify with a real `curl` test, and don't guess that a reboot fixed it without checking.
+- Managed Identity's actual mechanism (IMDS token issuance) and Key Vault's RBAC enforcement are two genuinely separate layers — a valid token (proving the identity itself is fine and reachable) says nothing about whether that identity is *authorized*; the `app-vm2` negative test made this concrete rather than theoretical.
+- Once again, resisted stating an exact, unverified Azure price under time pressure (NAT Gateway / Public IP) — `WebFetch` against the real pricing pages came back with placeholders both times.
+
+**Cost check:** Real, ongoing cost added this session: Key Vault (Standard SKU, per-operation billing — negligible at this app's real secret-read volume) and a NAT Gateway + its Standard public IP (hourly + per-GB, exact rate not stated since Azure's own pricing pages only show placeholders). This is a genuine, deliberate tradeoff: the app's two real secrets are no longer sitting in a plaintext `.env` file, and `app-vm1`/`app-vm2` have real internet egress again — both are load-bearing requirements, not optional polish, so the cost was accepted rather than avoided.
+
+## Module 11 (continued) — proportionate exposure fix + Azure Policy tagging — 2026-09-22
+
+**Plan item(s):** User asked to continue Module 11 with an explicit reminder to weigh cost-effectiveness at every step, not just per-module.
+
+**What I did — the unauthenticated-exposure finding, fixed proportionately:**
+- Investigated adding real JWT auth to `/ingest` and `/chat` (the natural next step after finding `JWT_SECRET` unused) — but first checked the actual frontend code (`AIMentor.tsx`) and found `/chat` is called directly by a live, in-app chatbot widget with zero login system anywhere in the app. This is a genuinely single-user personal tool, not multi-tenant.
+- Flagged the real tradeoff to the user before writing any auth code: adding real JWT auth would require also updating the frontend to attach a token, or it would silently break the AI Mentor widget the user actually uses.
+- User chose the proportionate fix instead: `docker-compose.yml`'s backend port was `8000:8000` (all interfaces) while Qdrant/Redis/Tempo were already correctly bound to `127.0.0.1` only. Changed to `127.0.0.1:8000:8000` to match.
+- Verified via `docker port devops-tut-backend-1` that the binding genuinely changed (was `0.0.0.0:8000`, now `127.0.0.1:8000`), and confirmed the app was completely unaffected — the frontend reaches the backend over the internal Docker network (`nginx`'s `proxy_pass http://backend:8000`), entirely separate from the host-published port. Health check and test suite both still pass.
+
+**What I did — Azure Policy tagging governance (free — built-in policy definitions have no cost):**
+- Checked current state first: zero resources in the resource group had any tags at all.
+- Assigned the built-in "Require a tag on resources" policy (`871b6d14-...`) at resource-group scope, requiring a `project` tag on any new resource.
+- Verified with a real enforcement test rather than trusting audit-mode documentation: created a test NSG *without* the tag — genuinely denied with `RequestDisallowedByPolicy`, no propagation delay. The same NSG *with* the tag succeeded immediately. Deleted the test resource afterward.
+- Brought all 24 tag-able existing resources in the resource group into compliance with `project=azureops-copilot` (one exception: a private endpoint's auto-managed NIC, which Azure doesn't expose independently for tagging).
+- Hit a real, confusing intermittent issue during the bulk-tag loop: `az tag update --operation Merge` reported `Bad Request` for every resource in a tight loop, but checking the actual resource state afterward showed most had genuinely succeeded anyway — the CLI's error reporting was unreliable under rapid successive calls, not the underlying API. Verified the *real* state directly (`az resource list --query "[].tags"`) rather than trusting the loop's exit codes, and individually retried (with small delays, and `az resource tag` instead of `az tag update` for the couple of stubborn ones like the RBAC-mode Key Vault) whatever was actually still untagged.
+
+**Commands used:**
+```bash
+# port binding
+# docker-compose.yml: '8000:8000' -> '127.0.0.1:8000:8000'
+docker port devops-tut-backend-1   # confirmed 127.0.0.1:8000, not 0.0.0.0
+curl http://localhost:8000/health  # still works
+curl http://localhost:5173/        # frontend still works, unaffected
+
+# Azure Policy
+az policy definition list --query "[?contains(displayName, 'Require a tag')]"
+az policy assignment create --name require-project-tag \
+  --policy 871b6d14-10aa-478d-b590-94f262ecfa99 \
+  --params '{"tagName":{"value":"project"}}' --scope <resource-group-id>
+az network nsg create --name policy-test-nsg-notag        # RequestDisallowedByPolicy
+az network nsg create --name policy-test-nsg-tagged --tags project=azureops-copilot   # succeeds
+az network nsg delete --name policy-test-nsg-tagged
+
+# bulk tagging, with real-state verification instead of trusting loop exit codes
+az resource list --resource-group azureops-copilot-rg --query "[].id" -o tsv
+az tag update --resource-id <id> --operation Merge --tags project=azureops-copilot
+az resource list --resource-group azureops-copilot-rg --query "[].{name:name, hasTag:tags.project}"
+```
+
+**What broke / what I learned:**
+- Almost built a disproportionate fix (full JWT auth requiring a frontend change) for what was actually a simple network-exposure problem — reading the real frontend code before choosing a fix avoided both over-engineering and a silent breakage of a feature the user actually uses.
+- `az tag update --operation Merge` run in a tight loop reported failures that weren't real — always verify the actual resource state after a bulk operation reports errors, rather than assuming the reported exit code is authoritative, especially under rapid successive API calls.
+- Azure Policy enforcement (at least for this built-in tag-requirement policy) is immediate, not eventually-consistent — no need to wait or assume propagation delay before testing it.
+
+**Cost check:** $0 added this round — the port-binding fix is pure Docker Compose config, and Azure Policy's built-in definitions (including the tag-requirement one used here) carry no charge. Both real gaps (unauthenticated local exposure, ungoverned tagging) closed without any new Azure spend, in contrast to the Key Vault/NAT Gateway work earlier this module which did have real, deliberate cost.

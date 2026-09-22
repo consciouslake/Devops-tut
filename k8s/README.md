@@ -9,7 +9,7 @@ no new Azure compute cost.
 
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-kubectl apply -f namespace.yaml -f qdrant.yaml -f redis.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
+kubectl apply -f namespace.yaml -f qdrant.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
 ```
 
 ## Notes

@@ -1453,3 +1453,41 @@ curl "http://20.235.48.180/?id=1%27%20OR%20%271%27=%271"   # HTTP 403, real publ
 - Confirmed again this session's recurring lesson: some Azure pricing pages genuinely show real numbers (WAF did) while others only show placeholders (NAT Gateway/Public IP didn't) — worth actually checking each one rather than assuming all Azure pricing pages behave the same way.
 
 **Cost check:** $0 added — Defender's free Foundational CSPM tier and the self-hosted WAF (one more small pod on the existing cluster) both cost nothing beyond what's already provisioned. Explicitly avoided: Application Gateway v2 + WAF (~$32.85/month+) and every paid Defender plan (Servers, Storage, Containers, etc.), none of which this project's real scale needs. **Module 11 is now fully complete — all 11 chapters, real infrastructure throughout, no chapter skipped or faked.**
+
+## Post-Module-11 cleanup — removing demo-app and unused Redis — 2026-09-22
+
+**Plan item(s):** User asked to clean up loose ends before moving to Module 12/13. Two real items flagged earlier in the session and left unresolved: `demo-app` (a throwaway test artifact from Module 10's Load Balancer decommission, now redundant since the real app is live at `/`) and Redis (deployed in both the cluster and local dev, never actually used by any app code).
+
+**What I did:**
+- Asked the user directly what to do with Redis rather than assume — real options were "actually use it for caching," "remove it," or "keep it unused for later." Chose removal.
+- Listed the real `demo-app` resources before deleting anything (`Deployment`, `Service`, `ConfigMap`, `Ingress` — four separate objects, not just the Deployment) and removed all four from the live cluster.
+- Removed the live cluster's `redis` Deployment + Service, then cleaned up every real reference to it: `backend/config.py` (`redis_url` setting), `backend/requirements.txt` (the `redis` package), `docker-compose.yml` (the `redis` service + its env var + `depends_on` entry), `backend/.env` / `.env.example`, `k8s/redis.yaml` (deleted the file entirely), and `k8s/backend.yaml`'s `REDIS_URL` env var.
+- Rebuilt the local backend, confirmed tests still pass and `/health` still returns `200` with Redis genuinely gone from `docker-compose.yml` (`docker compose up -d --remove-orphans` cleaned up the now-orphaned container).
+- Applied the updated `k8s/backend.yaml` to the live cluster and watched the rollout succeed.
+- Verified the real live app end-to-end after all of this: `curl` root returns `200`, a real `/ingest` call still succeeds, `/demo-app` now falls through to the frontend's own SPA catch-all route (expected `200` from `try_files $uri /index.html`, not a leftover demo-app response), and Grafana at `/grafana` is unaffected.
+
+**Commands used:**
+```bash
+kubectl get all,ingress -n default -l app=demo-app
+kubectl delete ingress demo-app-ingress -n default
+kubectl delete deployment demo-app -n default
+kubectl delete service demo-app -n default
+kubectl delete configmap demo-app-code -n default
+kubectl delete deployment redis -n azureops-copilot
+kubectl delete service redis -n azureops-copilot
+
+docker compose up -d --remove-orphans   # cleaned up the now-orphaned local redis container
+kubectl apply -f backend.yaml           # backend manifest without REDIS_URL
+kubectl rollout status deployment backend -n azureops-copilot
+
+curl http://20.235.48.180/                              # HTTP 200
+curl -X POST http://20.235.48.180/ingest -d '{"text":"...", "source":"cleanup-test"}'
+curl http://20.235.48.180/demo-app                       # HTTP 200 -- SPA fallback, not a leftover resource
+curl http://20.235.48.180/grafana/login                  # HTTP 200 -- unaffected
+```
+
+**What broke / what I learned:**
+- Nothing broke — this was pure removal of genuinely unused infrastructure, verified with real requests before and after each change rather than assumed safe.
+- `/demo-app` returning `200` after deleting all its Kubernetes resources looked alarming at first glance but is completely expected: the frontend's own nginx config (`try_files $uri /index.html`) serves the SPA shell for any path it doesn't recognize, so an old, now-nonexistent Ingress path just falls through to the catch-all `/` rule instead of erroring — worth remembering when verifying a resource is "really gone" behind an SPA frontend: check the actual Kubernetes objects, not just the HTTP status code of the URL that used to point at them.
+
+**Cost check:** $0 change, but genuine footprint reduction — one fewer pod running in the cluster (Redis), one fewer set of dead objects (demo-app's 4 resources), one fewer unused Python dependency shipped in the backend image. Tidier without changing anything the app actually needs.

@@ -419,9 +419,18 @@ end-to-end through the public IP, not just locally. User's explicit request:
 
 **Where it runs:** the same self-managed k3s cluster built in Module 8,
 behind the same Traefik Ingress already proven working for Grafana in
-Module 10 — $0 new Azure compute cost. Frontend, backend, Qdrant, and Redis
-all deployed as real Kubernetes workloads (manifests in `k8s/`, not just
+Module 10 — $0 new Azure compute cost. Frontend, backend, and Qdrant
+deployed as real Kubernetes workloads (manifests in `k8s/`, not just
 applied ad hoc and forgotten).
+
+**Update, 2026-09-22 (post-cleanup):** Redis was removed entirely — it was
+deployed both here and in local dev but never actually used by any app
+code (`rag.py` never had a caching layer, a finding first surfaced in
+Module 10's tracing work). User confirmed removal over building real usage
+for it or leaving it deployed unused. `demo-app` (Module 10's Load Balancer
+decommission test artifact) was also removed as redundant now that the
+real app is live at `/`. See LEARNING_LOG.md "Post-Module-11 cleanup" for
+the full verification.
 
 **Real decisions made before going live, not skipped:**
 - **Image access:** CI already publishes `ghcr.io/consciouslake/azureops-backend`

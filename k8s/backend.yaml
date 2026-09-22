@@ -23,8 +23,6 @@ spec:
           value: qdrant
         - name: QDRANT_PORT
           value: "6333"
-        - name: REDIS_URL
-          value: redis://redis:6379/0
         - name: AZURE_KEY_VAULT_NAME
           value: azureops-copilot-kv
         - name: OTEL_ENABLED

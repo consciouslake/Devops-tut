@@ -1128,3 +1128,54 @@ docker stop waf-proxy && docker rm waf-proxy                      # both VMs
 - Confirmed once more that stating a specific unverified Azure price is worth resisting even under time pressure — `WebFetch` against the real pricing page came back with placeholders, so the write-up says "real, ongoing cost" rather than a guessed dollar figure.
 
 **Cost check:** Net cost *reduction* — a genuinely billed Standard Load Balancer + its public IP were deleted entirely. The replacement (2 extra small pods + one more Ingress path on already-running Traefik) costs $0 marginal, since it reuses compute and networking already paid for since Module 8.
+
+## Module 10 (continued) — OpenTelemetry tracing for /chat, self-hosted Tempo — 2026-09-22
+
+**Plan item(s):** The last deferred Module 10 item — tracing the `/chat` path's latency breakdown, originally planned as "Redis vs Qdrant vs Gemini."
+
+**What I did:**
+- Read `rag.py` and `config.py` before writing any instrumentation, rather than assuming the planned Redis-caching layer existed. It doesn't: `redis_url` is configured and the `redis` container runs in `docker-compose.yml`, but no code path in `rag.py` ever reads or writes to it. Corrected the plan on the spot to trace the real three operations instead of inventing a fourth span for a feature that isn't there.
+- Added `backend/tracing.py` — a small OTel setup module (`TracerProvider`, `BatchSpanProcessor`, OTLP/gRPC exporter, `FastAPIInstrumentor.instrument_app`).
+- Instrumented the real operations directly in `rag.py`: manual spans around `embed()` (the Gemini embedding call), the Qdrant `search()` call inside `retrieve()`, and `generate_answer()` (the streaming Gemini completion), each with real attributes (model name, hit count, chunk count).
+- Added a manual `chat_query` parent span per WebSocket message in `main.py`'s `/chat` handler — necessary because FastAPI/Starlette's ASGI auto-instrumentation only produces one span for the WebSocket connection's lifetime, not one per logical chat turn exchanged over it.
+- Added a self-hosted Tempo service to `docker-compose.yml` (`grafana/tempo:2.6.1`, local disk storage, 24h block retention via `tempo.yaml`) and pointed the backend's `OTEL_EXPORTER_OTLP_ENDPOINT` at it.
+- Added the four new OTel packages to `backend/requirements.txt` (`opentelemetry-api`, `-sdk`, `-exporter-otlp-proto-grpc`, `-instrumentation-fastapi`), rebuilt, and confirmed the existing test suite still passes.
+- Verified with a real request, not a synthetic span: ingested a real text chunk via `/ingest`, sent a real question over the `/chat` WebSocket from inside the backend container, and queried Tempo's own `/api/search` and `/api/traces/<id>` endpoints directly to confirm a real trace landed with real span durations.
+
+**Commands used:**
+```bash
+docker compose up -d --build tempo backend
+curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" \
+  -d '{"text":"Azure Load Balancer distributes traffic... Standard SKU does not perform source NAT.","source":"otel-test"}'
+
+# real chat query, from inside the backend container (no local python available)
+docker compose exec backend python3 -c "
+import asyncio, websockets
+async def main():
+    async with websockets.connect('ws://localhost:8000/chat') as ws:
+        await ws.send('What does a Standard Load Balancer do with source IPs?')
+        while True:
+            msg = await ws.recv()
+            print(msg, end='')
+            if msg == '[[END]]': break
+asyncio.run(main())
+"
+# -> real, correct RAG answer using the ingested context
+
+curl -s "http://localhost:3200/api/search?tags="
+curl -s "http://localhost:3200/api/traces/<trace-id>"
+# real spans returned:
+# chat_query        4101.8ms
+#   gemini_generate  3401.4ms
+#   embed             596.2ms
+#   qdrant_search      85.9ms
+
+docker compose exec backend pytest -q   # 1 passed
+```
+
+**What broke / what I learned:**
+- Nothing broke, but the original plan was wrong in a way only reading the actual source code revealed — "trace Redis vs Qdrant vs Gemini" assumed a caching layer that was never implemented. Checking the real code before instrumenting it caught this before any wasted work on a fabricated span.
+- WebSocket connections need explicit, manual per-message spans; auto-instrumentation frameworks generally model a WebSocket as one long-lived "request," not a stream of independent logical operations, which doesn't fit a chat loop where each message is its own real unit of work worth its own trace.
+- Local Windows environment has no `python3`/`python` on PATH for ad-hoc WebSocket test scripts — ran the verification script inside the backend container instead (`docker compose exec backend python3 -c "..."`), which already has `websockets` installed as a real dependency.
+
+**Cost check:** $0 marginal spend — Tempo runs as one more plain container in the existing local `docker-compose.yml` dev stack, storing traces on local disk with a 24h retention window. No Application Insights resource created, no per-GB trace-ingestion billing.

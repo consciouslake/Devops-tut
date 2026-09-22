@@ -12,6 +12,9 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "dev-only-change-me"
 
+    otel_exporter_otlp_endpoint: str = "http://tempo:4317"
+    otel_enabled: bool = True
+
     class Config:
         env_file = ".env"
 

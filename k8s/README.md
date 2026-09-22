@@ -22,6 +22,15 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
   `azureops-frontend:latest`, built and published by `.github/workflows/ci.yml`
   on every merge to `main`. Both packages must be public (no image pull
   secret is configured) — see Package settings on GitHub.
+- **Auto-redeploy**: `ci.yml`'s `deploy` job (after its manual approval gate)
+  now also runs `kubectl rollout restart` for `backend` and `frontend` against
+  the live cluster via `az vm run-command`, then checks `/health` and `/`
+  really respond afterward. Added after a real gap was hit: publishing a
+  fresh `:latest` image doesn't make a running pod pull it — Module 12's
+  curriculum content sat stale in production until someone noticed and ran
+  the restart by hand. No new Azure permission was needed; the OIDC
+  identity's existing `Contributor` role (flagged, deliberately left as-is,
+  in Module 11's RBAC audit) already covers `az vm run-command`.
 - **Secrets**: the backend pod sets `AZURE_KEY_VAULT_NAME=azureops-copilot-kv`
   and fetches `GEMINI_API_KEY`/`JWT_SECRET` from Key Vault via Managed
   Identity at startup (Module 11) — no secret is stored in these manifests

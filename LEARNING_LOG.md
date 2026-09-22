@@ -1632,3 +1632,42 @@ docker compose exec -u root backend sh -c "echo '20.235.48.180 devopspk.online' 
 - Hit three separate, unrelated instances of stale local DNS caching in one session (my machine's resolver, the backend container's resolver, and — earlier — the registrar propagation delay itself) — each required a different, specific way of bypassing the cache to get a trustworthy read of the real, current state (`nslookup` against `8.8.8.8` directly, `curl --resolve`, a temporary container `/etc/hosts` entry) rather than assuming the first negative result was the final answer.
 
 **Cost check:** $0 — the real, trusted TLS certificate cost nothing (Let's Encrypt), and no Azure resource was created beyond the DNS zone already priced in the previous entry. `devopspk.online` and `www.devopspk.online` are now genuinely, verifiably live in production with valid HTTPS.
+
+## A real operational gap found and closed: CI never actually redeployed the cluster — 2026-09-22
+
+**Plan item(s):** User visited `devopspk.online` after Module 12 merged and saw the *old* curriculum content (Module 12 missing) — a real, live symptom of a real gap, not a hypothetical one.
+
+**What I did:**
+- Diagnosed rather than assumed: confirmed the Module 12 PRs were genuinely merged to `main` (`git log origin/main`), confirmed CI had genuinely published a fresh frontend image (`docker pull ghcr.io/.../azureops-frontend:latest` showed `"Downloaded newer image"`), which together proved the gap was specifically that nothing ever told the *running pod* to pull it.
+- Fixed the immediate symptom first: `kubectl rollout restart deployment frontend -n azureops-copilot` via `az vm run-command`, confirmed the new pod came up, confirmed the real deployed JS bundle now contained real Module 12 chapter content (`grep`'d for a real chapter id string, `front-door-subscription-block`, inside the built bundle) rather than just trusting the rollout succeeded.
+- User asked to close the gap properly. Extended `.github/workflows/ci.yml`'s existing `deploy` job (already OIDC-authenticated, already gated behind a manual production-environment approval from Module 7) with two new steps: a `kubectl rollout restart` for both `backend` and `frontend` via the same `az vm run-command` pattern used throughout this project's manual deploys, then a real post-deploy health check (`curl -sf` against `/` and `/health` on the live domain, `-f` so a bad status actually fails the job instead of silently succeeding).
+- Verified the exact commands would work *before* touching the workflow file: ran the real `az vm run-command` rollout-restart script manually first, confirmed both deployments rolled out cleanly, then confirmed the live app still worked (`/` `200`, a real `/ingest` POST succeeded) — only added it to CI after proving it worked for real, not as a first attempt inside a pipeline where failures are slower to iterate on.
+- No new Azure permission was needed: the OIDC identity's `Contributor` role over the whole resource group — flagged as broader than it needed to be during Module 11's RBAC audit, and deliberately left as-is at the time specifically because "real deployment automation might need it soon" — turned out to be exactly what this needed. The earlier decision to document rather than immediately tighten it was validated by this real, later use.
+
+**Commands used:**
+```bash
+git log --oneline -6 origin/main                      # confirmed PRs merged
+docker pull ghcr.io/consciouslake/azureops-frontend:latest   # confirmed fresh image published
+
+# fixing the immediate stale-prod symptom
+az vm run-command invoke --name app-vm1 --command-id RunShellScript --scripts \
+  "kubectl rollout restart deployment frontend -n azureops-copilot"
+curl -s https://devopspk.online/assets/index-*.js | grep -o "front-door-subscription-block"
+# confirmed the REAL new content is in the deployed bundle, not just "rollout succeeded"
+
+# proving the CI addition works before adding it to CI
+az vm run-command invoke --name app-vm1 --command-id RunShellScript --scripts \
+  "kubectl rollout restart deployment backend -n azureops-copilot
+   kubectl rollout restart deployment frontend -n azureops-copilot
+   kubectl rollout status deployment backend -n azureops-copilot --timeout=120s
+   kubectl rollout status deployment frontend -n azureops-copilot --timeout=120s"
+curl https://devopspk.online/          # 200
+curl https://devopspk.online/health    # {"status":"UP"}
+```
+
+**What broke / what I learned:**
+- "CI publishes a `:latest` image" and "the running app is serving that image" are two genuinely separate facts, and this project had silently been relying on someone noticing the gap and manually restarting pods — exactly the kind of manual step that's invisible until a real user (or the project owner) hits it.
+- Verified the deployed content by grepping for a real, specific string from the actual source rather than trusting "HTTP 200" or "rollout succeeded" as proof the right content was live — a wrong image tag or a stale cached layer could produce the same success signals while serving old content.
+- The value of documenting an over-permission instead of reflexively tightening it (Module 11) paid off directly here — no new role assignment, no new credential, no waiting on a human to run one, because the existing identity already had exactly the access this real automation needed.
+
+**Cost check:** $0 — reuses the existing OIDC identity and the existing `az vm run-command` pattern already used throughout this project; no new Azure resource, role, or credential.

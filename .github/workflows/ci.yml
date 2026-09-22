@@ -1,7 +1,11 @@
 # CI — extended in Module 7 with a Docker build + Trivy scan, and image
 # publishing to GitHub Container Registry (chosen over Azure Container
 # Registry for cost reasons — see PLAN.md/LEARNING_LOG.md Module 7 Chapter 9).
-# OIDC-authenticated Azure deploy comes next in the same module.
+# OIDC-authenticated Azure deploy comes next in the same module. Real
+# deployment (a rollout restart against the live k3s cluster) added after
+# Module 12 went live, once there was an actual production target to deploy
+# to and it became clear a merge to main never got in front of a real user
+# without a manual `kubectl rollout restart` first.
 name: CI
 
 on:
@@ -123,9 +127,11 @@ jobs:
   # App Registration (azureops-copilot-github-oidc) has a Federated Identity
   # Credential trusting ONLY repo:consciouslake/Devops-tut:ref:refs/heads/main,
   # so this token exchange only works from this exact repo's main branch,
-  # not from a fork or any other branch. Scope deliberately kept to proving
-  # the passwordless auth genuinely works -- see PLAN.md/LEARNING_LOG.md
-  # Module 7 Chapter 10 for why an actual deployment target wasn't added yet.
+  # not from a fork or any other branch. Originally scoped to just proving
+  # passwordless auth worked (Module 7), since there was no real deployment
+  # target yet -- now also triggers a real rollout restart against the live
+  # k3s cluster (added after Module 12 went live), reusing this same OIDC
+  # identity's existing Contributor role rather than granting anything new.
   deploy:
     runs-on: ubuntu-latest
     needs: docker-build-scan
@@ -150,3 +156,31 @@ jobs:
         run: |
           az account show --query "{subscription:name, user:user.name, authType:user.type}" -o table
           az resource list --resource-group azureops-copilot-rg --query "sort_by([], &name)[].{name:name, type:type}" -o table
+
+      # The app runs on the self-managed k3s cluster (Module 8), not an Azure
+      # PaaS deploy target -- so "deploy" here means telling the cluster to
+      # pull the freshly-published :latest images. There's no direct network
+      # path from a GitHub-hosted runner to the cluster's API server (it's
+      # only reachable inside the VNet), so this reuses the same az vm
+      # run-command pattern used throughout this project's own manual
+      # deploys instead of opening the API server to the internet. The OIDC
+      # identity's Contributor role (flagged as broader than it needed to be
+      # in Module 11's RBAC audit, deliberately left as-is for exactly this
+      # kind of future automation) already covers the VM run-command action
+      # -- no new permission grant was needed to add this step.
+      - name: Redeploy live cluster (pull fresh images)
+        run: |
+          az vm run-command invoke \
+            --resource-group azureops-copilot-rg \
+            --name app-vm1 \
+            --command-id RunShellScript \
+            --scripts "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+              kubectl rollout restart deployment backend -n azureops-copilot
+              kubectl rollout restart deployment frontend -n azureops-copilot
+              kubectl rollout status deployment backend -n azureops-copilot --timeout=120s
+              kubectl rollout status deployment frontend -n azureops-copilot --timeout=120s"
+
+      - name: Verify the live app is actually healthy after redeploy
+        run: |
+          curl -sf -o /dev/null -w "HTTPS root: HTTP %{http_code}\n" https://devopspk.online/
+          curl -sf -o /dev/null -w "health: HTTP %{http_code}\n" https://devopspk.online/health

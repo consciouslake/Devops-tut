@@ -1364,3 +1364,38 @@ curl -X POST http://20.235.48.180/ingest -d '{"text":"...", "source":"go-live-te
 - `cat file1.yaml file2.yaml > combined.yaml` is not a safe way to build a multi-document Kubernetes manifest — YAML documents need an explicit `---` separator, and a missing one can silently merge two documents into something that parses without an error but creates nothing correctly. Always verify the actual separator count / a `kubectl apply --dry-run` for multi-file concatenation, don't assume simple concatenation is equivalent to a proper multi-doc file.
 
 **Cost check:** $0 new Azure compute — reuses the existing k3s cluster and Traefik Ingress entirely. Grafana's new 1Gi PVC is negligible disk on already-provisioned VM storage. The one real, deliberately-accepted new cost surface is the AI Mentor's Gemini API usage now being publicly reachable, mitigated (not eliminated) by the rate limiter added specifically before going live.
+
+## Module 11 (continued) — closing out the free chapters: rotation, RBAC audit, CI scanning, least privilege — 2026-09-22
+
+**Plan item(s):** User: "finish Module 11" with the standing reminder to weigh cost at every step. Tackled the chapters that are genuinely $0 first (Shared responsibility, Entra ID/RBAC, secret rotation, CI scanning, least privilege synthesis), deferred WAF and Defender for Cloud pending a cost check since both have real paid tiers.
+
+**What I did:**
+- **Secret rotation, against the real live deployment, not a toy example:** rotated `jwt-secret`'s value in Key Vault via `az keyvault secret set` (which creates a new version rather than overwriting — confirmed via `az keyvault secret list-versions`, two real timestamps, old version still retrievable). Then deleted the actual running backend pod in the live `azureops-copilot` namespace and confirmed via its fresh logs that it re-fetched from Key Vault on startup (same `"Loaded secrets from Key Vault..."` line as the original deploy). Verified the live app kept working the whole time — a real `curl` health check and a real `/ingest` call both succeeded right after the restart.
+- **A real RBAC audit, not a description of RBAC:** ran `az role assignment list` across the subscription and resource group. Found two things: (1) the Key Vault roles from earlier this module are correctly scoped — the human account and `app-vm1`'s identity each hold a role on *only* the vault, nothing broader; (2) `azureops-copilot-github-oidc` (the GitHub Actions OIDC identity from Module 7) holds `Contributor` over the *entire resource group*, while its actual `deploy` job only does read-only verification (`az account show`, `az resource list`) — a real, live example of an over-permissioned identity sitting right next to a correctly-scoped one. Also found a genuinely redundant duplicate `Owner` role assignment (two separate assignment IDs, same role, same scope, same principal) — investigated by checking `az ad sp show` on both flagged object IDs to make sure it wasn't a real distinct second grant before concluding it was just redundant.
+- Presented the CI over-permission finding to the user with a concrete fix (downgrade to `Reader`, matching what the workflow actually does today) — they chose to document it rather than fix it now, since real deployment automation through this identity may be built soon and tightening now could just mean re-widening later. Left as a tracked, deliberate decision in the curriculum content, not silently dropped.
+- **Security scanning in CI, backed by a real dated incident already lived through this session:** rather than describe gitleaks/Trivy in the abstract, wrote the chapter around the actual `CVE-2026-0994` protobuf incident from Module 10's OpenTelemetry work — Trivy genuinely failed that build, the fix was a real dependency upgrade (not a `.trivyignore` suppression), and it was reverified end-to-end (clean install + a real traced `/chat` query still worked) before merging.
+- **Least privilege synthesis chapter:** pulled together every real finding from this module (Key Vault's positive/negative RBAC tests, the CI over-permission, the port-binding network fix, rate limiting added before going public) into one explicit pattern — least privilege isn't just an IAM concern, the same "what does this actually need" question was applied at the identity, network, and application layers across this module.
+- Wrote all 5 chapters into `frontend/src/data/curriculum.ts`, type-checked clean.
+
+**Commands used:**
+```bash
+# secret rotation
+az keyvault secret set --vault-name azureops-copilot-kv --name jwt-secret --value "<new>"
+az keyvault secret list-versions --vault-name azureops-copilot-kv --name jwt-secret
+kubectl delete pod -n azureops-copilot -l app=backend
+kubectl logs -n azureops-copilot -l app=backend --tail 10
+curl http://20.235.48.180/
+curl -X POST http://20.235.48.180/ingest -d '{"text":"...", "source":"rotation-test"}'
+
+# RBAC audit
+az role assignment list --query "[].{principal:principalName, role:roleDefinitionName, scope:scope}"
+az role assignment list --scope <resource-group-id> --include-inherited
+az ad sp show --id b0fd9102-d68e-4c18-a1e8-15c4bbf5d825   # identified azureops-copilot-github-oidc
+az role assignment list --scope <key-vault-id>              # confirmed the tightly-scoped contrast
+```
+
+**What broke / what I learned:**
+- Nothing broke this round — this was verification and audit work, not infrastructure changes. The discipline was in actually running the audit commands and checking real output rather than assuming the RBAC setup was fine because the Key Vault-specific parts of it were already known to be correct.
+- A CI/CD identity's permissions are easy to set generously once during initial pipeline setup and never revisit — found exactly that pattern here, and the right response wasn't to reflexively fix it, but to surface it as a real tradeoff (tighten now vs. leave room for planned future automation) and let the user decide.
+
+**Cost check:** $0 added this round — secret rotation, an RBAC audit, and reviewing existing CI scanning are all free operations against infrastructure that already exists. No new Azure resource created or resource tier changed.

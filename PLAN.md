@@ -239,6 +239,16 @@ Full chapter content for all 11 chapters in the frontend curriculum browser. See
 
 **Outcome:** secure the application and its delivery pipeline without hard-coded secrets.
 
+**Status (2026-09-22):** In progress — Chapters 3-4 (Managed identities, Key Vault) done for real, chapters 1-2 and 5-11 not yet started.
+- Real Key Vault created (`azureops-copilot-kv`, Standard SKU, **RBAC authorization** — not the legacy access-policy model), with the app's two real secrets (`gemini-api-key`, `jwt-secret`) migrated off `.env` and into it.
+- System-assigned Managed Identity enabled on `app-vm1`, granted `Key Vault Secrets User` (role assignment run by the user, per this project's standing rule that permission grants are never done autonomously). Verified genuinely working via the VM's raw IMDS endpoint (no `az` CLI installed on the VM) — real `HTTP 200` with the actual secret, value length checked but never printed to any output.
+- Negative case verified too: `app-vm2` given an identity but **no** role — gets a valid IMDS token but a real `403 Forbidden`/`ForbiddenByRbac` from Key Vault, proving this is identity-based access control, not network-based.
+- `backend/config.py` extended with an optional `AZURE_KEY_VAULT_NAME`-driven Key Vault secret-loading path (via `azure-identity` + `azure-keyvault-secrets`), falling back to `.env` unchanged when unset — local dev behavior unaffected, verified via a clean `/health` check after rebuild.
+- **Real regression found and fixed:** Module 10's `azureops-lb` decommission had silently killed `app-vm1`/`app-vm2`'s internet egress (Standard LB rules provide implicit outbound SNAT by default; neither VM has its own public IP or NAT Gateway). Neither a plain restart nor a full deallocate/start cycle restored it. Fixed with a NAT Gateway on `app-subnet` (real, ongoing cost — exact rate not stated, Azure's pricing pages only show placeholders) after checking real pricing pages first and presenting the honest tradeoff to the user.
+- **Real finding carried forward:** `JWT_SECRET` is configured but never actually used anywhere in the app — no endpoint has any authentication at all. Worth addressing in the "least privilege" chapter later.
+- **Cost outcome:** real, deliberate ongoing spend added (Key Vault per-operation billing, NAT Gateway hourly + per-GB) — both load-bearing (secrets no longer in plaintext, VMs need real egress), not optional. See LEARNING_LOG.md "Module 11 — Security & Governance" for full details.
+- **Not yet done:** Shared responsibility overview, Entra ID/RBAC review, network security chapter, secret rotation chapter, WAF, Defender for Cloud, Azure Policy, CI security scanning, least privilege/threat-aware architecture. Curriculum browser chapters for Module 11 not yet written — pending completion of more of the module before writing up.
+
 ### Module 12 — Azure Front Door & Production Edge
 
 1. Reverse proxy and edge delivery

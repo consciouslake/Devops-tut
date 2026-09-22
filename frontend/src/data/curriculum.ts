@@ -1972,6 +1972,30 @@ export const modules: Module[] = [
         azureConnection:
           "This is the concrete, dollar-and-cents payoff of every self-hosted decision made since Module 8: a real, billed Azure resource (Standard Load Balancer + its public IP) was identified, replaced with a verified-working software equivalent, and deleted — not a hypothetical cost exercise, an actual resource removed from the subscription.",
       },
+      {
+        id: 'opentelemetry-chat-tracing',
+        title: 'Tracing the /chat path with OpenTelemetry and self-hosted Tempo',
+        concept:
+          "Before instrumenting anything, the actual code was checked rather than assumed: the original plan was to trace \"Redis vs Qdrant vs Gemini\" latency, but `rag.py` never used Redis at all — it's provisioned in `docker-compose.yml` and configured in `config.py`, but no caching logic exists in the RAG path. Rather than fabricate a Redis span to match the plan, the real path was traced instead: `embed` (the Gemini embedding call), `qdrant_search` (the vector search), and `gemini_generate` (the streaming chat completion), all wrapped in a parent `chat_query` span per WebSocket message. Traces export via OTLP/gRPC to a self-hosted Tempo instance (`grafana/tempo`, plain container in `docker-compose.yml`, local disk storage, 24h retention) — no Application Insights, no per-GB trace ingestion billing.",
+        whyDevops:
+          "Tracing what the code actually does, discovered by reading it, is the whole point of this exercise — instrumenting an imagined caching layer would have produced a technically-working but meaningless trace. This is the same discipline as every other chapter in this curriculum: verify the real system before describing or measuring it.",
+        handsOn: [
+          { label: 'Manual spans around the real RAG operations (rag.py)', code: 'def embed(text, task_type="retrieval_document"):\n    with tracer.start_as_current_span("embed") as span:\n        span.set_attribute("embedding.model", EMBEDDING_MODEL)\n        ...\n\ndef retrieve(query, top_k=5):\n    query_vector = embed(query, task_type="retrieval_query")\n    with tracer.start_as_current_span("qdrant_search") as span:\n        span.set_attribute("qdrant.hits", len(hits))\n        ...\n\ndef generate_answer(query, context_chunks):\n    with tracer.start_as_current_span("gemini_generate") as span:\n        ...' },
+          { label: 'A parent span per chat message (main.py) — needed because WebSocket auto-instrumentation only covers the connection, not each message', code: 'with tracer.start_as_current_span("chat_query") as span:\n    span.set_attribute("chat.query_length", len(query))\n    context_chunks = rag.retrieve(query)\n    for token in rag.generate_answer(query, context_chunks):\n        await ws.send_text(token)' },
+          { label: 'Self-hosted Tempo, added to docker-compose.yml', code: "tempo:\n  image: grafana/tempo:2.6.1\n  command: ['-config.file=/etc/tempo.yaml']\n  volumes:\n    - ./tempo.yaml:/etc/tempo.yaml\n    - tempo_storage:/var/tempo\n  ports:\n    - '127.0.0.1:3200:3200'   # query API\n    - '127.0.0.1:4317:4317'   # OTLP gRPC receiver" },
+          { label: 'Verified with a real chat query, not a synthetic span', code: 'curl -X POST http://localhost:8000/ingest -d \'{"text":"...", "source":"test"}\'\n# then a real WebSocket /chat message, then:\ncurl "http://localhost:3200/api/traces/<trace-id>"\n# real latency breakdown returned:\n# chat_query        4101.8ms\n#   gemini_generate  3401.4ms   <- streaming generation dominates\n#   embed             596.2ms   <- Gemini embedding call\n#   qdrant_search      85.9ms   <- fastest step by far' },
+        ],
+        troubleshooting: [
+          'Planned to trace a Redis caching layer that doesn\'t exist in the code → caught by reading `rag.py` before writing any instrumentation, not after; traced the real three operations instead of inventing a fourth.',
+          'A WebSocket connection is long-lived, so FastAPI\'s auto-instrumentation only produces one span for the connection itself, not one per message exchanged over it — a manual `chat_query` span per received message was required to get one trace per real chat turn.',
+        ],
+        interview: [
+          'Why would auto-instrumentation alone be insufficient for a WebSocket-based endpoint handling multiple logical requests over one connection?',
+          'Given this trace\'s real numbers (embed 596ms, Qdrant 86ms, Gemini generation 3401ms), where would you focus optimization effort first, and why?',
+        ],
+        azureConnection:
+          "This is the self-hosted equivalent of Application Insights' distributed tracing — same OpenTelemetry standard, same trace/span model, exported to Tempo instead of Azure Monitor's per-GB-billed ingestion pipeline, at $0 marginal cost on a container already running alongside the rest of this project's local dev stack.",
+      },
     ],
   },
 ]

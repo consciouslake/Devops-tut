@@ -2,12 +2,16 @@ import logging
 
 from fastapi import FastAPI, WebSocket
 from pydantic import BaseModel
+from starlette.websockets import WebSocketDisconnect
 
 import rag
+from tracing import get_tracer, setup_tracing
 
 logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="AzureOps Copilot")
+setup_tracing(app)
+tracer = get_tracer()
 
 
 @app.get("/health")
@@ -32,13 +36,22 @@ async def chat(ws: WebSocket):
     try:
         while True:
             query = await ws.receive_text()
-            try:
-                context_chunks = rag.retrieve(query)
-                for token in rag.generate_answer(query, context_chunks):
-                    await ws.send_text(token)
-            except Exception:
-                logger.exception("chat generation failed")
-                await ws.send_text("[error] something went wrong generating a response")
+            with tracer.start_as_current_span("chat_query") as span:
+                span.set_attribute("chat.query_length", len(query))
+                try:
+                    context_chunks = rag.retrieve(query)
+                    for token in rag.generate_answer(query, context_chunks):
+                        await ws.send_text(token)
+                except Exception:
+                    logger.exception("chat generation failed")
+                    span.set_attribute("chat.error", True)
+                    await ws.send_text("[error] something went wrong generating a response")
             await ws.send_text("[[END]]")
+    except WebSocketDisconnect:
+        pass
     except Exception:
-        await ws.close()
+        logger.exception("unexpected /chat error")
+        try:
+            await ws.close()
+        except Exception:
+            pass

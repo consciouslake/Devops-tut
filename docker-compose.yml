@@ -18,6 +18,16 @@ services:
     ports:
       - '127.0.0.1:6379:6379'
 
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+      - tempo_storage:/var/tempo
+    ports:
+      - '127.0.0.1:3200:3200'   # Tempo query API
+      - '127.0.0.1:4317:4317'   # OTLP gRPC receiver
+
   backend:
     build: ./backend
     env_file:
@@ -25,9 +35,11 @@ services:
     environment:
       QDRANT_HOST: qdrant
       REDIS_URL: redis://redis:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
     depends_on:
       - qdrant
       - redis
+      - tempo
     ports:
       - '8000:8000'
 
@@ -40,3 +52,4 @@ services:
 
 volumes:
   qdrant_storage:
+  tempo_storage:

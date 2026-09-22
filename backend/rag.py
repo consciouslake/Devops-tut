@@ -13,6 +13,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from config import settings
+from tracing import get_tracer
+
+tracer = get_tracer()
 
 genai.configure(api_key=settings.gemini_api_key)
 
@@ -48,13 +51,16 @@ def chunk_text(text: str, max_chars: int = 1500, overlap: int = 200) -> list[str
 
 
 def embed(text: str, task_type: str = "retrieval_document") -> list[float]:
-    result = genai.embed_content(
-        model=EMBEDDING_MODEL,
-        content=text,
-        task_type=task_type,
-        output_dimensionality=EMBEDDING_DIM,
-    )
-    return result["embedding"]
+    with tracer.start_as_current_span("embed") as span:
+        span.set_attribute("embedding.model", EMBEDDING_MODEL)
+        span.set_attribute("embedding.task_type", task_type)
+        result = genai.embed_content(
+            model=EMBEDDING_MODEL,
+            content=text,
+            task_type=task_type,
+            output_dimensionality=EMBEDDING_DIM,
+        )
+        return result["embedding"]
 
 
 def ingest_text(text: str, source: str) -> int:
@@ -76,21 +82,28 @@ def ingest_text(text: str, source: str) -> int:
 def retrieve(query: str, top_k: int = 5) -> list[dict]:
     ensure_collection()
     query_vector = embed(query, task_type="retrieval_query")
-    hits = _qdrant.search(
-        collection_name=settings.qdrant_collection, query_vector=query_vector, limit=top_k
-    )
-    return [{"text": h.payload["text"], "source": h.payload["source"], "score": h.score} for h in hits]
+    with tracer.start_as_current_span("qdrant_search") as span:
+        span.set_attribute("qdrant.collection", settings.qdrant_collection)
+        span.set_attribute("qdrant.top_k", top_k)
+        hits = _qdrant.search(
+            collection_name=settings.qdrant_collection, query_vector=query_vector, limit=top_k
+        )
+        span.set_attribute("qdrant.hits", len(hits))
+        return [{"text": h.payload["text"], "source": h.payload["source"], "score": h.score} for h in hits]
 
 
 def generate_answer(query: str, context_chunks: list[dict]):
     """Yields response text chunks (Gemini streaming)."""
-    context = "\n\n---\n\n".join(c["text"] for c in context_chunks)
-    prompt = (
-        "You are AzureOps Copilot, a DevOps/Azure study assistant. "
-        "Answer using only the context below; say so if it doesn't contain the answer.\n\n"
-        f"Context:\n{context}\n\nQuestion: {query}"
-    )
-    model = genai.GenerativeModel(CHAT_MODEL)
-    for chunk in model.generate_content(prompt, stream=True):
-        if chunk.text:
-            yield chunk.text
+    with tracer.start_as_current_span("gemini_generate") as span:
+        span.set_attribute("gemini.model", CHAT_MODEL)
+        span.set_attribute("gemini.context_chunks", len(context_chunks))
+        context = "\n\n---\n\n".join(c["text"] for c in context_chunks)
+        prompt = (
+            "You are AzureOps Copilot, a DevOps/Azure study assistant. "
+            "Answer using only the context below; say so if it doesn't contain the answer.\n\n"
+            f"Context:\n{context}\n\nQuestion: {query}"
+        )
+        model = genai.GenerativeModel(CHAT_MODEL)
+        for chunk in model.generate_content(prompt, stream=True):
+            if chunk.text:
+                yield chunk.text

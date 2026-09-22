@@ -2300,6 +2300,126 @@ export const modules: Module[] = [
         azureConnection:
           "The real cost comparison this chapter actually demonstrates: Front Door Standard (~$35/month, and genuinely unavailable on this subscription anyway) versus Azure DNS (a few cents/month) plus a self-hosted Ingress controller's free ACME integration — the same functional outcome (a real domain, real TLS) for a fraction of the cost, once the multi-origin/global-edge value Front Door specifically adds isn't actually needed.",
       },
+      {
+        id: 'reverse-proxy-edge-concepts',
+        title: 'Reverse proxy and edge delivery: what this project already has vs. what Front Door adds',
+        concept:
+          "A reverse proxy sits in front of one or more backend services, terminating client connections and forwarding requests on their behalf — this project has had one running in production since Module 8: Traefik, k3s's bundled Ingress controller, now doing real TLS termination, path-based routing (`/` to the app, `/grafana` to Grafana), and — since Module 12's DNS work — real ACME certificate management. \"Edge delivery\" in the Front Door/CDN sense means something more specific: anycast entry points distributed globally, so a user's connection terminates at the *nearest* point of presence rather than always reaching one specific datacenter, with caching and WAF inspection happening at that edge before traffic ever reaches the origin network. This project's Traefik reverse proxy runs at exactly one place (the k3s cluster, spanning centralindia and southindia) — genuinely a reverse proxy, but not edge delivery in the global-anycast sense, since every user's connection terminates at the same regional location regardless of where they are.",
+        whyDevops:
+          "Conflating \"I have a reverse proxy\" with \"I have edge delivery\" is a common category error — they solve different problems (routing/TLS/WAF at one location vs. global proximity and origin offload), and this project is concrete proof of the distinction: everything Traefik does here is genuinely valuable and already running, but it doesn't reduce latency for a user on the other side of the world the way real edge presence would.",
+        handsOn: [
+          { label: "What Traefik already does here, for real", code: "kubectl get ingress -n azureops-copilot\n# azureops-copilot-ingress       -- catch-all, HTTP, any host\n# azureops-copilot-ingress-tls   -- devopspk.online / www, real TLS\n\n# reverse proxy responsibilities Traefik already fulfills:\n# - TLS termination (real Let's Encrypt cert, Module 12)\n# - Path-based routing (/  vs  /grafana)\n# - Backend health awareness (readiness probes)\n# NOT fulfilled (this is the edge/CDN-specific gap):\n# - Global points of presence\n# - Edge caching\n# - DDoS absorption at internet scale" },
+        ],
+        troubleshooting: [
+          'Assuming a reverse proxy automatically provides edge/CDN benefits → check whether it runs at one location or many; Traefik here runs entirely within this project\'s single k3s cluster, so every user\'s connection — regardless of their location — terminates at the same regional network, unlike a true CDN/edge product.',
+        ],
+        interview: [
+          'What specifically does "edge" mean in a CDN/Front Door context that a single-location reverse proxy doesn\'t provide?',
+          'Name three things this project\'s Traefik setup and Azure Front Door both do, and one significant thing only Front Door does.',
+        ],
+        azureConnection:
+          "This project's real reverse proxy (Traefik) already delivers most of what a team actually needs day to day (routing, TLS, WAF via Module 11's self-hosted layer) — the remaining gap (true global edge presence) is exactly the piece Front Door would add, and exactly the piece this project's single-region-effective user base doesn't currently need enough to justify its cost.",
+      },
+      {
+        id: 'front-door-architecture-concepts',
+        title: "Front Door's architecture: endpoints, routes, origins, origin groups",
+        concept:
+          "Even without a built resource, Front Door's architecture maps cleanly onto real decisions this project already made elsewhere. An **endpoint** is a public hostname Front Door exposes — conceptually the same role `devopspk.online` plays pointed at Traefik directly. A **route** maps a path pattern on that endpoint to an **origin group** — the same job this project's two separate Ingress objects do (`/` and `/grafana` routing to different backend Services). An **origin group** is Front Door's failover unit: it holds one or more real origins (an App Service, a VM's public IP, another Front Door, a storage static site) and health-probes each one, routing only to healthy ones — this is the piece that has no real analog in this project's setup, because there's only ever been one origin (the k3s cluster's public IP) to route to. A **health probe** at the origin-group level is what makes automatic failover possible — without at least two real origins behind one group, a health probe can only ever tell you \"the one origin is up or down,\" not meaningfully redirect traffic anywhere else.",
+        whyDevops:
+          "Understanding Front Door's architecture in terms of concepts already built (endpoints ≈ a domain pointed at an Ingress, routes ≈ path-based Ingress rules, origin groups ≈ the piece genuinely missing without a second real origin) makes the abstract product concrete, and makes it obvious exactly what would need to exist before Front Door's core value — automatic origin failover — could ever actually engage for this specific app.",
+        handsOn: [
+          { label: 'This project\'s real equivalents to Front Door\'s pieces', code: '# Front Door concept        -> this project\'s real equivalent\n# Endpoint                  -> devopspk.online, pointed at Traefik\n# Route (path -> backend)   -> Ingress rules (/  and  /grafana)\n# Origin                    -> the k3s cluster\'s single public IP\n# Origin GROUP (failover)   -> genuinely absent -- would need a 2nd\n#                              real origin (e.g. a second cluster in\n#                              a different region) to mean anything' },
+        ],
+        troubleshooting: [
+          'Configuring an origin group with only one real origin and expecting failover behavior → a health probe on a single-origin group can only report up/down, it has nothing to fail over TO; this is exactly this project\'s current architecture, and exactly why Front Door\'s core value doesn\'t apply yet.',
+        ],
+        interview: [
+          'What\'s the minimum real infrastructure that would need to exist before an Azure Front Door origin group\'s failover behavior actually does anything useful?',
+          'Map Front Door\'s endpoint/route/origin-group model onto a Kubernetes Ingress\'s host/path/Service model — where do they line up, and where do they genuinely differ?',
+        ],
+        azureConnection:
+          "This mapping is the honest answer to \"why wasn't Front Door built here\": every piece of it that this project could use today (endpoint, route) already has a working, $0 equivalent; the one piece that would add real value (a genuine origin group with 2+ real origins) doesn't exist yet because this project doesn't have a second real deployment to fail over to.",
+      },
+      {
+        id: 'caching-and-edge-waf-concepts',
+        title: "Caching and WAF at the edge: why this app's shape limits both",
+        concept:
+          "Front Door's caching sits in front of an origin and serves repeat requests for the same URL without hitting the origin at all — genuinely valuable for static or slowly-changing content (images, CSS, a marketing page). This app's real traffic shape works against that: `/ingest` and `/chat` are both inherently dynamic (a POST and a WebSocket, neither cacheable by definition), and the curriculum browser's content, while static-ish, is served as a single-page app bundle already cached client-side by the browser via normal HTTP caching headers — there's very little repeat-origin-hit traffic here for edge caching to meaningfully reduce. WAF at the edge (Front Door's or Application Gateway's WAF SKU) inspects requests before they reach any origin at all — this project already has a real, functionally equivalent WAF layer (Module 11's self-hosted `owasp/modsecurity-crs`), just one layer further in (at the Ingress, not a global edge network) — the actual attack-blocking behavior (a verified real `403` on a SQL-injection payload) is the same; only the network location and cost differ.",
+        whyDevops:
+          "Not every app benefits equally from edge caching — recognizing that this app's real traffic pattern (dynamic API calls, a small SPA bundle) doesn't have much for a cache to hold onto is a more useful skill than reflexively adding a CDN in front of everything regardless of whether it helps.",
+        handsOn: [
+          { label: "This app's real traffic shape, and why caching wouldn't help much", code: '# /              -- SPA shell + JS bundle, browser-cached already (immutable asset hashes)\n# /ingest         -- POST, mutates state, never cacheable\n# /chat            -- WebSocket, inherently dynamic, never cacheable\n# /grafana         -- authenticated dashboards, per-user, not cacheable\n\n# WAF: already real and verified (Module 11), one layer in instead of at a global edge\ncurl "http://20.235.48.180/?id=1%27%20OR%20%271%27=%271"\n# HTTP 403 -- same attack-blocking outcome as Front Door/App Gateway WAF,\n# at $0 instead of a real per-month cost' },
+        ],
+        troubleshooting: [
+          'Adding an edge cache in front of an app whose traffic is mostly dynamic API calls → check the actual request mix first; caching a WebSocket or a state-mutating POST is a category error, not a misconfiguration to debug.',
+        ],
+        interview: [
+          'What characteristics make a request cacheable at the edge, and does this app\'s real traffic have much of that shape?',
+          'What\'s functionally different between a WAF running at a global edge network versus one running at a single cluster\'s Ingress layer, for the same attack payload?',
+        ],
+        azureConnection:
+          "Module 11's self-hosted WAF decision and this chapter's caching analysis are the same underlying judgment applied twice: match the tool to the app's actual traffic shape and threat model, rather than defaulting to the most feature-complete (and expensive) edge product available.",
+      },
+      {
+        id: 'edge-product-comparison-final',
+        title: 'Front Door vs. Application Gateway vs. Load Balancer vs. Traffic Manager: the real comparison',
+        concept:
+          "Four Azure products that all sound like they overlap, actually solving different problems at different layers, with real pricing gathered across this project rather than assumed: **Load Balancer** (Standard SKU, decommissioned in Module 10) — Layer 4, regional, real cost (roughly $0.03/hour combined with its public IP when it existed here), no HTTP awareness at all. **Application Gateway** — Layer 7, regional, WAF-capable, real cost verified in Module 11 (~$32.85/month fixed for v2 + WAF alone, plus capacity and data charges) — the \"Front Door but regional, not global\" option. **Traffic Manager** — DNS-level failover only, no data-plane proxying at all (it just answers DNS queries differently based on origin health), priced per-DNS-query with no fixed base — the cheapest multi-region option, but the least capable (no WAF, no caching, no path routing, and DNS TTLs mean failover isn't instant). **Front Door** — Layer 7, *global* edge, real WAF and caching, real cost (~$35/month Standard, ~$330/month Premium) — the only one of the four with actual global points of presence, and correspondingly the only one genuinely blocked on this Free Trial subscription.",
+        whyDevops:
+          "These four products form a real decision ladder by scope and cost, not a random menu — Load Balancer for L4/regional, Application Gateway for L7/regional/WAF, Traffic Manager for cheap DNS-level multi-region failover, Front Door for the full global-edge package — and every rung of that ladder has now been either built for real or priced for real in this single project.",
+        handsOn: [
+          { label: 'The real comparison, grounded in this project\'s own numbers', code: "# Load Balancer      -- L4, regional.       ~$0.03/hr + IP  (Module 6, decommissioned Module 10)\n# Application Gateway -- L7, regional, WAF.  ~$32.85/mo+     (priced, Module 11, not built)\n# Traffic Manager     -- DNS only, global.   ~$0.54/M queries (priced, Module 6, not built)\n# Front Door          -- L7, GLOBAL edge, WAF, cache. ~$35-330/mo (blocked, this subscription)\n\n# this project's real choice: Traefik (L7, regional) + self-hosted WAF (Module 11)\n# + Let's Encrypt TLS (Module 12) = Application Gateway's functional equivalent, at $0" },
+        ],
+        troubleshooting: [
+          'Choosing Front Door "because it\'s the most capable option" without checking whether its specific capability (global edge presence) is actually needed → this project needed L7 routing + WAF + TLS, all of which Application Gateway (or, as built here, a self-hosted equivalent) already provides at a fraction of Front Door\'s cost.',
+        ],
+        interview: [
+          'Walk through the decision tree between these four products for a team that needs HTTP-level routing and a WAF, but is currently single-region.',
+          'Why is Traffic Manager\'s DNS-only failover both its cheapest and its least capable property?',
+        ],
+        azureConnection:
+          "This comparison is the direct payoff of building (or pricing) every rung of this ladder for real across the project instead of describing them abstractly — the numbers in this chapter came from an actual decommissioned Load Balancer, an actual priced-but-not-built Application Gateway, and an actual blocked Front Door attempt, not a pricing page skim.",
+      },
+      {
+        id: 'multi-region-and-failure-testing',
+        title: "Multi-region architecture and failure testing: what this project actually has",
+        concept:
+          "This project's k3s cluster genuinely spans two Azure regions — `app-vm1`/`app-vm2` in centralindia, `azureops-vm01` in southindia, connected by real VNet peering (Module 8) — which sounds like multi-region architecture, but is a materially different thing from what Front Door's multi-region value proposition assumes. Front Door expects multiple **independent origins**, each capable of serving the full application on its own, with Front Door routing/failing over between them. This project's cross-region spread is **cluster-internal HA** — one single Kubernetes control plane and one single application deployment, whose *control-plane* members happen to be split across regions for etcd quorum resilience, not multiple independent copies of the app itself. The real failure test already run (Module 8: stopping a node, watching etcd quorum and pod scheduling survive with the remaining 2) proves *cluster* resilience — it says nothing about what would happen if the *entire region* containing the cluster's public-facing node (`azureops-vm01`, southindia) went down, since there's only one Traefik entry point and it lives on that one node's public IP.",
+        whyDevops:
+          "Distinguishing \"my infrastructure spans multiple regions\" from \"my application has multi-region failover\" is exactly the kind of nuance that matters in a real incident — this project has real resilience against a single node failing, genuinely verified, but not against the specific region hosting its public entry point going down, and conflating the two would be a dangerous assumption to carry into a postmortem.",
+        handsOn: [
+          { label: 'What was actually tested (Module 8) vs. what Front Door multi-region would test', code: '# Already tested, real, verified (Module 8):\n# stop one etcd/control-plane node -> cluster survives, scheduling continues\n# -- this is CLUSTER resilience, node-level\n\n# NOT tested, and structurally can\'t be with the current architecture:\n# the entire southindia region (where azureops-vm01\'s public IP lives) goes down\n# -- Traefik\'s public entry point has no failover target; there is no second\n#    independent origin for anything to fail over TO' },
+        ],
+        troubleshooting: [
+          'Assuming "my cluster spans two regions" is equivalent to "my app has regional failover" → check whether there are multiple independent, full copies of the application (multi-origin) versus one deployment whose control-plane members are merely spread across regions for internal HA — this project genuinely has the second, not the first.',
+        ],
+        interview: [
+          'What\'s the difference between a Kubernetes cluster whose control-plane nodes span two regions, and an application with true multi-region failover?',
+          'What specifically would need to be built before this project could run a real Front-Door-style regional failover test?',
+        ],
+        azureConnection:
+          "This is the honest, load-bearing reason Front Door's core value doesn't apply here yet, stated as precisely as possible: real multi-region *infrastructure* exists (Module 8's VNet peering and 3-node spread), but not multi-region *application deployment* — the single missing ingredient, a second full, independent origin, is also exactly what would eventually justify actually paying for Front Door.",
+      },
+      {
+        id: 'production-design-review',
+        title: 'Production design review: the honest architecture decision record',
+        concept:
+          "Closing Module 12 the way a real production design review would: stating the decision, the reasoning, and the conditions that would change it — not just what was built. **Decision**: `devopspk.online` connects via Azure DNS + Traefik's self-hosted Let's Encrypt integration, not Azure Front Door. **Reasoning**: (1) Front Door is genuinely blocked on this subscription's Free Trial tier — a hard constraint, not a preference; (2) even if it weren't blocked, this project's own architecture (one real origin) doesn't yet exercise Front Door's core differentiator (multi-origin failover across a global edge); (3) the functional needs that remain — HTTP routing, TLS, WAF — already have real, $0 equivalents built in Modules 8, 11, and 12. **What would change this decision**: a second, fully independent deployment of this app in a different Azure region (not just cluster nodes spread across regions, a genuinely separate origin), enough real user traffic that global edge latency actually matters, or a compliance/SLA requirement specifically demanding Front Door's guarantees. Until any of those become true, the current architecture is the correct one, not a compromise being tolerated.",
+        whyDevops:
+          "A production design review that only says \"here's what we built\" is incomplete — the more valuable output is \"here's what would need to change before this decision should be revisited,\" because that's what actually prevents both premature over-engineering now and a stale decision going unquestioned later.",
+        handsOn: [
+          { label: 'The real decision record for this project', code: '# DECISION: devopspk.online -> Azure DNS + Traefik Let\'s Encrypt (not Front Door)\n#\n# WHY:\n# 1. Front Door blocked on this subscription (hard constraint, verified)\n# 2. Single real origin -- Front Door\'s core value (multi-origin failover)\n#    doesn\'t apply yet regardless of #1\n# 3. Routing/TLS/WAF needs already met at $0 (Modules 8, 11, 12)\n#\n# REVISIT WHEN:\n# - a second, independent regional deployment of this app exists\n# - real traffic volume/geography makes edge latency measurably matter\n# - a compliance/SLA requirement specifically needs Front Door' },
+        ],
+        troubleshooting: [
+          'Treating an architecture decision as permanent rather than conditional → every real decision in this module was made with an explicit "revisit when X" condition, not stated as a final, unquestionable answer.',
+        ],
+        interview: [
+          'Walk through this project\'s decision not to use Front Door as if presenting it in a real design review — what\'s the decision, the reasoning, and the conditions that would change it?',
+          'Why is stating the conditions that would reverse a decision as important as the decision itself?',
+        ],
+        azureConnection:
+          "This closes Module 12's actual outcome — \"understand when and how Front Door fits\" — with a real, specific answer grounded in this exact project's constraints and traffic shape, rather than a generic \"it depends\": it doesn't fit yet, here's precisely why, and here's precisely what would make it fit later.",
+      },
     ],
   },
 ]

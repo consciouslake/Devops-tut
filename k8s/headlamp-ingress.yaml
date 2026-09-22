@@ -1,13 +1,4 @@
 apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: headlamp-basic-auth
-  namespace: headlamp
-spec:
-  basicAuth:
-    secret: headlamp-basic-auth
----
-apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: headlamp-route
@@ -19,8 +10,6 @@ spec:
   - match: Host(`devopspk.online`) && PathPrefix(`/headlamp`)
     kind: Rule
     priority: 1000
-    middlewares:
-    - name: headlamp-basic-auth
     services:
     - name: headlamp
       port: 80

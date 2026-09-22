@@ -1795,3 +1795,22 @@ kubectl -n headlamp create secret generic headlamp-basic-auth \
 kubectl apply -f headlamp-ingress.yaml                 # Middleware (basicAuth) + IngressRoute referencing it, replacing the temp route
 ```
 Verified both directions with `curl`: no credentials -> real `401` before ever reaching Headlamp's own token screen; correct `admin:<password>` via `-u` -> real `200` with `<title>Headlamp`. Renamed `headlamp-ingress-temp.yaml` to `headlamp-ingress.yaml` and dropped the old `headlamp-temp-route` object entirely, since "temporary" no longer describes it.
+
+**Update — BasicAuth reverted, real architectural conflict found (2026-09-22):** in the browser, the BasicAuth popup and Headlamp's own token screen kept appearing to loop together. Root cause, confirmed with three targeted `curl` tests rather than guessed: Traefik's `basicAuth` middleware and Headlamp's own Kubernetes bearer-token auth **both consume the same `Authorization` header**, and a single HTTP request can only carry one value there.
+```bash
+# 1. Both credentials in one request -- Traefik chokes on the malformed/dual header, 401
+curl -u '<user>:<password>' -H "Authorization: Bearer $TOKEN" .../headlamp/clusters/main/me
+
+# 2. BasicAuth only, no Bearer -- passes Traefik, Headlamp's own backend correctly says unauthorized
+curl -u '<user>:<password>' .../headlamp/clusters/main/me
+# {"message":"unauthorized"}
+
+# 3. The smoking gun: Bearer only, no Basic -- Traefik itself rejects it as invalid Basic auth
+curl -H "Authorization: Bearer $TOKEN" .../headlamp/clusters/main/me
+# HTTP 401, Www-Authenticate: Basic realm="traefik"
+```
+Test 3 is what proved it: Headlamp's frontend JS *only* sends `Authorization: Bearer <token>` for its own API calls (never Basic), and Traefik's BasicAuth middleware rejects anything that isn't `Basic ...` in that same header — so every real API call Headlamp made was doomed to fail at the edge, regardless of how valid the token was. `removeHeader: true` on the middleware (Traefik's option to strip the Basic header before forwarding downstream) does not fix this, because the rejection happens *before* forwarding, at validation time.
+
+Reverted to token-only: removed the `Middleware` and its `middlewares:` reference from `headlamp-ingress.yaml`, deleted the now-unused `headlamp-basic-auth` and `headlamp-sa-token` Secrets from the cluster. Real alternatives that would avoid this collision, if a password-style gate is wanted again later: an IP allowlist (no header involved at all, but breaks on IP rotation), or a proper cookie-based auth proxy (oauth2-proxy/Authelia) in front, since cookies and the `Authorization` header are independent channels.
+
+**Lesson:** any reverse-proxy auth layer that reads or writes the `Authorization` header will collide with an app that also uses that header for its own token auth — check what header an app's own auth flow uses *before* picking a proxy-level auth mechanism, not after wiring it up.

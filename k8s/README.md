@@ -97,11 +97,17 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
   chart's defaults assume root-path serving). Its ServiceAccount is bound
   to `cluster-admin` by the chart's own default, judged acceptable here
   since it grants nothing beyond what the account owner already has via
-  their own kubeconfig. **`headlamp-ingress-temp.yaml` is a deliberately
-  temporary public route** (`/headlamp` on `devopspk.online`, `priority:
-  1000` — needed to unambiguously beat the catch-all Ingress's own
-  Traefik-computed default priority, based on its rule string's length)
-  added only so the user could view it in a browser without a working
-  local `kubectl` tunnel. **Remove this Ingress once no longer needed** —
-  `kubectl delete -f headlamp-ingress-temp.yaml` — a cluster-admin login
-  screen shouldn't sit on the public internet indefinitely.
+  their own kubeconfig. `headlamp-ingress.yaml` is the **permanent**
+  public route (`/headlamp` on `devopspk.online`, `priority: 1000` —
+  needed to unambiguously beat the catch-all Ingress's own
+  Traefik-computed default priority, based on its rule string's length).
+  Because Headlamp itself is only gated by a bearer token (short-lived,
+  but the route being permanently public meant that alone wasn't enough),
+  it now also sits behind a Traefik `Middleware` (`basicAuth`, same file)
+  backed by a `headlamp-basic-auth` Secret — **created imperatively on
+  the cluster, not committed to git**, same pattern as Key Vault-sourced
+  app secrets (Module 11): `kubectl -n headlamp create secret generic
+  headlamp-basic-auth --from-literal=users='<user>:<apr1-hash>'` (hash via
+  `openssl passwd -apr1`). A request without valid BasicAuth now gets a
+  real `401` before it ever reaches Headlamp's own token login screen —
+  verified via `curl` both ways.

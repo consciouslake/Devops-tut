@@ -1785,4 +1785,13 @@ curl --resolve devopspk.online:443:20.235.48.180 https://devopspk.online/headlam
 - Cross-namespace Service references in a Traefik `IngressRoute` are blocked by default, with a clear, real error message once you check the logs for it — worth checking Traefik's own logs immediately after any Ingress/IngressRoute change that doesn't behave as expected, rather than only checking `kubectl get` status (which showed the object as successfully created, with no visible fault, both times something was actually wrong).
 - The Kubernetes Dashboard project being archived is a real, dated fact worth knowing independent of this specific task — worth remembering for any future "let's use the Kubernetes Dashboard" suggestion in this or any project.
 
-**Cost check:** $0 — Headlamp is one more small pod on the existing cluster, reusing the same public IP and Traefik instance already paying for nothing extra. The temporary public route will be removed once the user has finished looking at the UI, per the explicit plan agreed before exposing it.
+**Cost check:** $0 — Headlamp is one more small pod on the existing cluster, reusing the same public IP and Traefik instance already paying for nothing extra.
+
+**Update — made permanent, added a real second auth layer (2026-09-22):** the plan going in was to expose Headlamp temporarily and remove the public route once viewed. The user then decided to keep it permanently instead. A bearer token alone is fine for a short-lived look, but not as the only gate on a `cluster-admin` UI sitting on the public internet indefinitely — so before calling it done, added a Traefik `basicAuth` Middleware in front of the route:
+```bash
+openssl passwd -apr1 '<password>'                     # generate an apr1 hash, never send the plaintext to the cluster
+kubectl -n headlamp create secret generic headlamp-basic-auth \
+  --from-literal=users='<user>:<apr1-hash>'            # imperative, not committed to git -- same pattern as Key Vault-sourced app secrets (Module 11)
+kubectl apply -f headlamp-ingress.yaml                 # Middleware (basicAuth) + IngressRoute referencing it, replacing the temp route
+```
+Verified both directions with `curl`: no credentials -> real `401` before ever reaching Headlamp's own token screen; correct `admin:<password>` via `-u` -> real `200` with `<title>Headlamp`. Renamed `headlamp-ingress-temp.yaml` to `headlamp-ingress.yaml` and dropped the old `headlamp-temp-route` object entirely, since "temporary" no longer describes it.

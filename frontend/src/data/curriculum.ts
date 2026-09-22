@@ -2435,26 +2435,6 @@ export const modules: Module[] = [
     outcome: 'See the complete, real architecture of AzureOps Copilot as it actually runs today — the big picture, every layer, and each component broken down.',
     chapters: [
       {
-        id: 'architecture-why-not-3d',
-        title: 'Why these diagrams are 2D, not Three.js',
-        concept:
-          "Every diagram in this module is plain SVG — rectangles, paths, and text, styled to match this app's own dark theme — not a 3D engine. Architecture diagrams are fundamentally 2D relationship information: \"the frontend talks to the backend,\" \"the backend authenticates to Key Vault.\" A 3D scene adds real costs to represent that: a WebGL context, camera controls, lighting, raycasting for interactivity, and a meaningfully heavier bundle — and it makes the actual information *harder* to read, since the viewer has to fight camera angles to see what connects to what, instead of just looking at a flowchart. Every serious architecture-diagramming tool in real use (draw.io, Lucidchart, the Azure/AWS reference architecture diagrams, Mermaid) is 2D for exactly this reason. The one place animation genuinely helps — showing a request's real path and order — is handled with plain SVG `<animateMotion>` and a CSS `stroke-dashoffset` animation (Chapter 5), which needed zero new dependencies and stays fully readable at a glance.",
-        whyDevops:
-          "Choosing the simplest tool that actually serves the reader, instead of the most impressive-looking one, is the same judgment applied throughout this whole project (self-hosted WAF over Application Gateway, DNS+Traefik over Front Door) — here applied to a UI decision instead of an infrastructure one, but it's the identical question: does this added complexity buy real value, or just visual novelty.",
-        handsOn: [
-          { label: 'The actual diagram stack used here', code: "// frontend/src/components/diagrams/ -- plain React + inline SVG\n// DiagramShared.tsx   -- shared Node/DbNode/GroupBox/Arrow primitives,\n//                        color tokens matching this app's own theme\n// 8 diagram components, one per chapter in this module\n// Animation: native SVG <animateMotion> + CSS stroke-dashoffset --\n// no charting library, no Three.js, no new dependency added at all" },
-        ],
-        troubleshooting: [
-          'Reaching for the most visually impressive tool (3D, heavy animation libraries) before checking whether the content actually needs it → architecture/flow diagrams are 2D relationship data; a 3D scene doesn\'t make "A calls B" any more understandable, it just adds navigation friction on top of it.',
-        ],
-        interview: [
-          'When would 3D visualization genuinely add value over a 2D diagram, and why does a software architecture diagram not fall into that category?',
-          'What are the real costs (bundle size, accessibility, maintainability) of adding a 3D rendering library just for visual polish?',
-        ],
-        azureConnection:
-          "This module documents the real, current architecture built across Modules 1-13 — the diagram technology choice itself is a small but genuine example of the same cost/complexity-consciousness applied to every infrastructure decision in this project, just applied to frontend tooling instead.",
-      },
-      {
         id: 'architecture-system-overview',
         title: 'The complete system, in one picture',
         diagramId: 'system-overview',

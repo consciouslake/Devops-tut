@@ -1491,3 +1491,37 @@ curl http://20.235.48.180/grafana/login                  # HTTP 200 -- unaffecte
 - `/demo-app` returning `200` after deleting all its Kubernetes resources looked alarming at first glance but is completely expected: the frontend's own nginx config (`try_files $uri /index.html`) serves the SPA shell for any path it doesn't recognize, so an old, now-nonexistent Ingress path just falls through to the catch-all `/` rule instead of erroring — worth remembering when verifying a resource is "really gone" behind an SPA frontend: check the actual Kubernetes objects, not just the HTTP status code of the URL that used to point at them.
 
 **Cost check:** $0 change, but genuine footprint reduction — one fewer pod running in the cluster (Redis), one fewer set of dead objects (demo-app's 4 resources), one fewer unused Python dependency shipped in the backend image. Tidier without changing anything the app actually needs.
+
+## Getting tracing working in the real cluster, not just local dev — 2026-09-22
+
+**Plan item(s):** The last flagged loose end — `OTEL_ENABLED=false` in the cluster's `backend.yaml` since no Tempo existed there when the app first went live, meaning tracing only ever worked in local `docker-compose` dev, never in production.
+
+**What I did:**
+- Wrote `k8s/tempo.yaml`: a real Tempo Deployment in the `azureops-copilot` namespace, config supplied via a ConfigMap (same `tempo.yaml` OTLP-receiver config already proven in local dev), backed by a 1Gi PVC on the `local-path` storage class (same pattern as Qdrant/Grafana's persistent storage).
+- Flipped `k8s/backend.yaml`'s `OTEL_ENABLED` to `"true"` and set `OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317`, applied it, and confirmed the pod rolled out clean (no crash, `"Loaded secrets from Key Vault..."` still appears, `/health` still returns real `200`s in the logs).
+- Sent a real chat query through the live public IP (`ws://20.235.48.180/chat`), then queried Tempo's own `/api/search` endpoint inside the cluster directly — found a real `HTTP /chat` trace, 3867ms, confirming tracing genuinely works end-to-end in production now, not just asserted from the pod staying healthy.
+- Added Tempo as a Grafana datasource in the `monitoring` namespace (`tempo-grafana-datasource.yaml`, same sidecar-discovery ConfigMap pattern already used for Loki in Module 10), explicitly `isDefault: false` this time — deliberately avoiding the exact "two datasources both default" conflict that caused a real CrashLoopBackOff back in Module 10. Restarted Grafana to pick it up and verified all four datasources (Alertmanager, Loki, Prometheus, Tempo) registered correctly with Prometheus still the only default — and, since this was another Grafana pod restart, re-confirmed the custom dashboard from Module 10 survived it (proving the PVC persistence fix from the go-live work is genuinely durable, not just a one-time pass).
+
+**Commands used:**
+```bash
+kubectl apply -f tempo.yaml
+kubectl apply -f backend.yaml   # OTEL_ENABLED=true now
+kubectl rollout status deployment backend -n azureops-copilot
+
+# real chat query through the public IP, then:
+curl "http://<tempo-cluster-ip>:3200/api/search?tags="
+# real HTTP /chat trace, 3867ms -- confirmed, not assumed
+
+kubectl apply -f tempo-grafana-datasource.yaml
+kubectl delete pod -n monitoring -l app.kubernetes.io/name=grafana
+curl -u admin:$PW http://<grafana-ip>/api/datasources
+# Alertmanager, Loki, Prometheus (default), Tempo -- all four correct
+curl -u admin:$PW 'http://<grafana-ip>/api/search?query=AzureOps'
+# custom dashboard still there after another real pod restart
+```
+
+**What broke / what I learned:**
+- Nothing broke — deliberately set `isDefault: false` on the new Tempo datasource specifically because of the real CrashLoopBackOff already lived through in Module 10 from two datasources both claiming default. Applying that lesson prevented a repeat of the same incident rather than rediscovering it.
+- Verified persistence didn't just work once by coincidence — restarting Grafana again for an unrelated reason (adding a datasource) and re-checking the dashboard survived is a stronger confirmation than the original single test.
+
+**Cost check:** $0 — Tempo is one more small pod + 1Gi PVC on the existing cluster, same pattern as everything else self-hosted this project. This closes out every loose end flagged after go-live: demo-app removed, Redis removed, tracing now works in production, not just local dev.

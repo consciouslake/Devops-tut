@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI, WebSocket
 from pydantic import BaseModel
+from starlette.websockets import WebSocketDisconnect
 
 import rag
 from tracing import get_tracer, setup_tracing
@@ -46,5 +47,11 @@ async def chat(ws: WebSocket):
                     span.set_attribute("chat.error", True)
                     await ws.send_text("[error] something went wrong generating a response")
             await ws.send_text("[[END]]")
+    except WebSocketDisconnect:
+        pass
     except Exception:
-        await ws.close()
+        logger.exception("unexpected /chat error")
+        try:
+            await ws.close()
+        except Exception:
+            pass

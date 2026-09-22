@@ -1179,3 +1179,27 @@ docker compose exec backend pytest -q   # 1 passed
 - Local Windows environment has no `python3`/`python` on PATH for ad-hoc WebSocket test scripts — ran the verification script inside the backend container instead (`docker compose exec backend python3 -c "..."`), which already has `websockets` installed as a real dependency.
 
 **Cost check:** $0 marginal spend — Tempo runs as one more plain container in the existing local `docker-compose.yml` dev stack, storing traces on local disk with a 24h retention window. No Application Insights resource created, no per-GB trace-ingestion billing.
+
+## Real bug found and fixed while checking chat logging — 2026-09-22
+
+**Plan item(s):** None — surfaced by checking `docker compose logs backend` in response to a direct question ("how to check the chat logging"), not something being deliberately tested for.
+
+**What I did:**
+- Ran `docker compose logs backend` to show real chat activity and found a genuine, pre-existing `RuntimeError` traceback: `"Unexpected ASGI message 'websocket.close', after sending 'websocket.close' or response already completed."` — triggered every time a `/chat` client disconnected normally.
+- Root cause: `main.py`'s outer `except Exception: await ws.close()` caught `WebSocketDisconnect` (a normal, expected event on client disconnect) along with genuine errors, and tried to close a connection the ASGI layer had already closed on detecting the disconnect — a double-close.
+- Fixed by importing `WebSocketDisconnect` from `starlette.websockets` and handling it separately (`except WebSocketDisconnect: pass`), leaving the generic `except Exception` branch — now wrapped in its own inner `try/except` — only for genuinely unexpected errors.
+- Verified the fix for real: rebuilt the backend, reproduced the exact same disconnect scenario (the same WebSocket test script used to verify tracing earlier), and confirmed the log now shows a clean `INFO: connection closed` with no traceback. Re-ran the test suite (`pytest -q`) — still 1 passed.
+
+**Commands used:**
+```bash
+docker compose logs backend --tail 40      # found the RuntimeError
+docker compose up -d --build backend       # after the fix
+docker compose exec backend python3 -c "... same websocket test as before ..."
+docker compose logs backend --tail 15      # clean: connection open / connection closed, no traceback
+docker compose exec backend pytest -q      # 1 passed
+```
+
+**What broke / what I learned:**
+- This bug pre-dates the OpenTelemetry work this session — it wasn't caused by the tracing instrumentation, just first noticed while reading logs to verify tracing. A reminder that `except Exception` around a WebSocket handler needs to distinguish "the client left" (expected, no action needed) from "something actually went wrong" (worth logging and attempting a clean close) — conflating the two turns a routine disconnect into a crash-shaped log entry.
+
+**Cost check:** No cost impact — a pure code-correctness fix in the local backend, no infrastructure changed.

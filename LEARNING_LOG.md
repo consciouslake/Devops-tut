@@ -1525,3 +1525,60 @@ curl -u admin:$PW 'http://<grafana-ip>/api/search?query=AzureOps'
 - Verified persistence didn't just work once by coincidence — restarting Grafana again for an unrelated reason (adding a datasource) and re-checking the dashboard survived is a stronger confirmation than the original single test.
 
 **Cost check:** $0 — Tempo is one more small pod + 1Gi PVC on the existing cluster, same pattern as everything else self-hosted this project. This closes out every loose end flagged after go-live: demo-app removed, Redis removed, tracing now works in production, not just local dev.
+
+## Module 12 — Azure Front Door & Production Edge, real domain connection — 2026-09-22
+
+**Plan item(s):** User: "next module 12." Flagged upfront that this project's own Module 6 chapter already concluded Front Door isn't justified for a single-origin app, and that Standard/Premium have real, meaningful cost (~$35/mo and ~$330/mo respectively). Presented three options; user chose to actually build real Front Door Standard despite the cost, to genuinely experience it hands-on.
+
+**What I did — the real, hard Front Door blocker:**
+- `az afd profile create --sku Standard_AzureFrontDoor` (after installing the `cdn` CLI extension and waiting for the `Microsoft.Cdn` resource provider to register) failed with `(BadRequest) Free Trial and Student account is forbidden for Azure Frontdoor resources` — not a quota, region, or config issue; a flat subscription-type restriction with zero workaround short of an actual subscription upgrade.
+- Presented this real finding to the user immediately rather than trying workarounds; they chose not to upgrade, so Front Door's hands-on chapters become comparison-only (same honest pattern as Module 9's AKS chapter) — the module's stated outcome ("understand when and how Front Door fits") doesn't require a built resource, and this project's own data (single origin, no multi-region failover need) already argues against it anyway.
+
+**What I did — connecting the real domain a different way (DNS + Traefik, not Front Door):**
+- Created the real Azure DNS zone for `devopspk.online` — first attempt was correctly blocked by Module 11's own Azure Policy (`RequestDisallowedByPolicy`, missing the required `project` tag) — genuine proof that policy is still actively enforced weeks after being set up. Retried with the tag, succeeded.
+- Added a real `A` record (`@` → `20.235.48.180`) and `www` CNAME, verified both resolve correctly by querying Azure's own nameserver directly (`ns1-01.azure-dns.com`) — same verification technique already proven in Module 6, confirming the Azure-side DNS is correct independent of registrar delegation status.
+- Opened port 443 on `azureops-vm01NSG` (only 80 existed, from Module 10's Grafana work).
+- Configured k3s's bundled Traefik with a real Let's Encrypt ACME resolver via a `HelmChartConfig` (the correct way to customize k3s's Helm-managed Traefik) — email, HTTP-01 challenge on the `web` entrypoint, persistent `/data` volume so `acme.json` survives pod restarts. Deliberately did NOT enable a global HTTP→HTTPS redirect, since that would've also forced HTTPS on the bare IP and Grafana, which have no real cert — verified the new Traefik pod rolled out with zero downtime (old pod stayed serving until the new one was ready).
+
+**A real regression, hit and fixed within minutes:**
+- Added a `tls.hosts` list to the existing catch-all Ingress (no explicit `host` field on the rule) — immediately broke bare-IP access (`20.235.48.180` root started returning `404`, confirmed via `curl` right after applying). Root cause, discovered by inspecting the actual Ingress state rather than guessing: Traefik's Kubernetes Ingress provider, when it sees a `tls.hosts` list without a matching `host` in the rule, restricts the *entire generated router* — including the plain-HTTP entrypoint — to just those TLS hosts. Not documented ahead of time; learned from the real, observed behavior.
+- Fixed by splitting into two separate Ingress objects: `azureops-copilot-ingress` (unchanged catch-all, no TLS, serves bare-IP/any-host HTTP exactly as before) and `azureops-copilot-ingress-tls` (explicit `host: devopspk.online` / `host: www.devopspk.online` rules, TLS + cert-resolver annotation, only affects those two hostnames). Re-verified: bare IP back to `200`, Grafana unaffected, and `https://devopspk.online` (tested via `curl --resolve` to bypass the DNS propagation wait) returns `200`.
+
+**Confirmed still blocked on external DNS propagation, not Azure:**
+- `devopspk.online`'s registrar NS records still show GoDaddy's (`ns59/ns60.domaincontrol.com`), confirmed via two independent resolvers (local + Google's `8.8.8.8`) — the user updated them at the registrar, but propagation hadn't completed yet at the time of this check.
+- The live site currently serves Traefik's own default self-signed cert for the domain (`openssl s_client -servername devopspk.online` shows `issuer=CN=TRAEFIK DEFAULT CERT`), because Let's Encrypt's HTTP-01 challenge needs the domain to resolve publicly first — Traefik will retry ACME issuance automatically once delegation propagates; no further action needed on the Azure/cluster side.
+
+**Commands used:**
+```bash
+az extension add --name cdn
+az afd profile create --sku Standard_AzureFrontDoor ...
+# (BadRequest) Free Trial and Student account is forbidden for Azure Frontdoor resources
+
+az network dns zone create --name devopspk.online --tags project=azureops-copilot
+az network dns record-set a add-record --zone-name devopspk.online --record-set-name "@" --ipv4-address 20.235.48.180
+az network dns record-set cname set-record --zone-name devopspk.online --record-set-name www --cname devopspk.online
+nslookup devopspk.online ns1-01.azure-dns.com   # confirmed resolving correctly, Azure-side
+
+az network nsg rule create --nsg-name azureops-vm01NSG --name allow-https --destination-port-ranges 443
+
+kubectl apply -f traefik-tls-config.yaml   # HelmChartConfig, real ACME resolver
+kubectl rollout status deployment traefik -n kube-system   # zero-downtime rollout
+
+# the regression
+kubectl apply -f ingress.yaml   # added tls.hosts, no host rule -- broke bare IP
+curl http://20.235.48.180/   # 404 -- real regression caught immediately
+# fixed: split into ingress.yaml (catch-all) + ingress-tls-domain.yaml (host-scoped + TLS)
+curl http://20.235.48.180/   # 200 -- fixed
+curl -k --resolve devopspk.online:443:20.235.48.180 https://devopspk.online/   # 200
+
+nslookup -type=NS devopspk.online 8.8.8.8   # still GoDaddy -- propagation pending
+openssl s_client -connect 20.235.48.180:443 -servername devopspk.online | openssl x509 -noout -issuer
+# issuer=CN=TRAEFIK DEFAULT CERT -- confirms real cert not yet issued, expected
+```
+
+**What broke / what I learned:**
+- Front Door's Free-Trial/Student restriction is a genuinely hard blocker with no config workaround — the same category as Module 8's vCPU quota wall. Worth checking subscription-type restrictions on any new Azure service before assuming quota or region issues are the only failure modes.
+- Traefik's Kubernetes Ingress provider has a real, non-obvious interaction between `tls.hosts` and a rule with no `host` field — adding TLS-only host hints to an otherwise-catch-all Ingress silently narrows the whole router. Splitting host-scoped and catch-all concerns into separate Ingress objects is the safer default whenever TLS is being added to only some of the traffic a router handles.
+- Verified DNS propagation status via TWO independent resolvers (not just one) before concluding it hadn't happened yet — a single resolver could be showing stale cached data specific to that resolver, not the real global state.
+
+**Cost check:** $0 — the DNS zone and Let's Encrypt certificate are both free; Front Door was never actually created (blocked by the subscription restriction), so no cost was incurred there either despite the user's willingness to accept it.

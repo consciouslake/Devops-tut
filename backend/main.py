@@ -1,10 +1,11 @@
 import logging
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
 import rag
+from rate_limit import chat_limiter, client_ip_from_request, client_ip_from_websocket, ingest_limiter
 from tracing import get_tracer, setup_tracing
 
 logger = logging.getLogger("uvicorn.error")
@@ -25,7 +26,9 @@ class IngestRequest(BaseModel):
 
 
 @app.post("/ingest")
-def ingest(req: IngestRequest):
+def ingest(req: IngestRequest, request: Request):
+    if not ingest_limiter.allow(client_ip_from_request(request)):
+        raise HTTPException(status_code=429, detail="Too many ingest requests, try again shortly.")
     n_chunks = rag.ingest_text(req.text, req.source)
     return {"source": req.source, "chunks_ingested": n_chunks}
 
@@ -33,9 +36,14 @@ def ingest(req: IngestRequest):
 @app.websocket("/chat")
 async def chat(ws: WebSocket):
     await ws.accept()
+    client_ip = client_ip_from_websocket(ws)
     try:
         while True:
             query = await ws.receive_text()
+            if not chat_limiter.allow(client_ip):
+                await ws.send_text("[error] rate limit reached, please wait a few minutes and try again")
+                await ws.send_text("[[END]]")
+                continue
             with tracer.start_as_current_span("chat_query") as span:
                 span.set_attribute("chat.query_length", len(query))
                 try:

@@ -26,7 +26,9 @@ spec:
         - name: AZURE_KEY_VAULT_NAME
           value: azureops-copilot-kv
         - name: OTEL_ENABLED
-          value: "false"
+          value: "true"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://tempo:4317"
         readinessProbe:
           httpGet:
             path: /health

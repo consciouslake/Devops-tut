@@ -1,15 +1,17 @@
 # AzureOps Copilot — Kubernetes deployment manifests
 
-Deploys the real app (frontend, backend, Qdrant, Redis) onto the self-managed
+Deploys the real app (frontend, backend, Qdrant) onto the self-managed
 k3s cluster built in Module 8, behind the Traefik Ingress already proven
 working for Grafana in Module 10. Reuses existing infrastructure end to end —
-no new Azure compute cost.
+no new Azure compute cost. (Redis was deployed originally but removed —
+it was never actually used by any app code.)
 
 ## Apply
 
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-kubectl apply -f namespace.yaml -f qdrant.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
+kubectl apply -f namespace.yaml -f qdrant.yaml -f tempo.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
+kubectl apply -f tempo-grafana-datasource.yaml   # adds Tempo to the monitoring namespace's Grafana
 ```
 
 ## Notes
@@ -45,3 +47,9 @@ kubectl apply -f namespace.yaml -f qdrant.yaml -f backend.yaml -f frontend.yaml 
   Verified against the live public IP: a real SQL-injection-style payload
   gets `HTTP 403`, normal HTTP and WebSocket (`/chat`) traffic passes
   through unaffected.
+- **Tracing**: `tempo.yaml` deploys a real Tempo instance in-cluster
+  (PVC-backed, same pattern as local dev's `docker-compose.yml` Tempo).
+  `backend.yaml` sets `OTEL_ENABLED=true` and points
+  `OTEL_EXPORTER_OTLP_ENDPOINT` at it — tracing is no longer local-dev-only.
+  `tempo-grafana-datasource.yaml` wires it into the `monitoring` namespace's
+  Grafana as a non-default datasource, alongside Prometheus and Loki.

@@ -2249,12 +2249,64 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'front-door-production-edge',
+    number: 12,
+    mono: 'FD',
+    title: 'Azure Front Door & Production Edge',
+    outcome: 'Understand when and how Front Door fits into a global Azure application.',
+    chapters: [
+      {
+        id: 'front-door-subscription-block',
+        title: 'A real, hard blocker: Front Door and this subscription type',
+        concept:
+          "Before writing this chapter, the plan was to actually provision real Front Door Standard (~$35/month base, verified via Azure's pricing page in Module 11) in front of the live app, specifically to get genuine hands-on configuration experience even though this project's own Module 6 chapter had already concluded Front Door isn't functionally justified for a single-origin app. That plan hit a real, hard wall: `az afd profile create` failed immediately with `(BadRequest) Free Trial and Student account is forbidden for Azure Frontdoor resources` — not a quota limit, not a region restriction, not a missing resource provider (those were checked and ruled out first: the `cdn` CLI extension was installed, `Microsoft.Cdn` was registered) — a flat, subscription-type-level restriction with zero workaround short of an actual subscription upgrade. This is the same category of hard wall hit in Module 8 (the vCPU quota block on Free Trial subscriptions), not a first occurrence.",
+        whyDevops:
+          "Real Azure subscriptions have real, sometimes surprising restrictions tied to their commercial type, not just their configured quotas — a production engineer needs to distinguish \"this needs different config\" from \"this needs a different subscription entirely,\" and the only way to tell them apart reliably is hitting the real error rather than assuming a workaround exists.",
+        handsOn: [
+          { label: 'The real, exact failure', code: "az extension add --name cdn\naz afd profile create --resource-group <rg> --profile-name <name> \\\n  --sku Standard_AzureFrontDoor\n# ERROR: (BadRequest) Free Trial and Student account is forbidden for\n# Azure Frontdoor resources.\n# -- no SKU, region, or quota change fixes this; it's the subscription type itself" },
+        ],
+        troubleshooting: [
+          'Assuming a failed resource-creation call is always a config, quota, or region problem → check the exact error message class first; `BadRequest` with subscription-type language (as opposed to `QuotaExceeded` or `ResourceNotAvailableForOffer`, both hit earlier in this project for different reasons) means no amount of parameter tuning will fix it.',
+        ],
+        interview: [
+          'What\'s the practical difference between a quota-related Azure error and a subscription-type-related one, and how would you tell them apart from the error message alone?',
+          'Given Front Door couldn\'t be built, what would you check to confirm a hands-on chapter genuinely can\'t be completed versus assuming it can\'t without trying?',
+        ],
+        azureConnection:
+          "Consistent with this project's standing practice (Module 8's quota wall, Module 9's deliberate AKS comparison-only chapter): when a real, hard constraint blocks hands-on work, the honest response is documenting the real blocker and building a comparison chapter instead of faking or skipping the content entirely.",
+      },
+      {
+        id: 'tls-custom-domain-real',
+        title: 'Connecting the real domain: DNS + Traefik instead of Front Door',
+        concept:
+          "With Front Door genuinely unavailable, the module's real deliverable — actually connecting `devopspk.online`, reserved and untouched since Module 6 — was built a different way: Azure DNS (already proven safe to build ahead of delegation in Module 6) plus Traefik's own free Let's Encrypt integration, already running as the cluster's Ingress controller since Module 8. A real DNS zone was created (blocked once by Module 11's own tag-enforcement Azure Policy — genuine, live proof that policy is still active — retried with the tag), with an `A` record pointing `@` at the live cluster's public IP and a `www` CNAME, both verified resolving correctly by querying Azure's own nameserver directly. Traefik was reconfigured via a `HelmChartConfig` (the correct way to customize k3s's Helm-managed Traefik, rather than editing its Deployment directly) to run a real ACME `certificatesResolvers` config against Let's Encrypt, with persistent storage for the issued certificate so it survives pod restarts.",
+        whyDevops:
+          "TLS termination and DNS delegation are the actual, concrete work behind \"connecting a domain\" — Front Door (or Application Gateway, or any edge product) is one place that work can live, but it's not the only place, and a single-origin app gets the same end-user outcome (a real domain, real HTTPS) from a self-hosted Ingress controller's built-in ACME support at $0 instead of ~$35+/month.",
+        handsOn: [
+          { label: 'Real DNS zone, blocked once by real policy, then created correctly', code: 'az network dns zone create --name devopspk.online\n# RequestDisallowedByPolicy -- Module 11\'s tag policy, still enforced\n\naz network dns zone create --name devopspk.online --tags project=azureops-copilot\n# succeeds -- 4 real Azure nameservers assigned\n\naz network dns record-set a add-record --zone-name devopspk.online \\\n  --record-set-name "@" --ipv4-address 20.235.48.180\n\nnslookup devopspk.online ns1-01.azure-dns.com\n# resolves correctly -- Azure-side DNS confirmed working, independent\n# of whether the registrar has delegated yet' },
+          { label: "Traefik's real Let's Encrypt config, via k3s's HelmChartConfig", code: '# HelmChartConfig named "traefik" in kube-system -- the supported way\n# to customize k3s\'s bundled, Helm-managed Traefik\nadditionalArguments:\n  - "--certificatesresolvers.letsencrypt.acme.email=<real email>"\n  - "--certificatesresolvers.letsencrypt.acme.storage=/data/acme.json"\n  - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"\npersistence:\n  enabled: true\n  path: /data\n  size: 128Mi\n# applied -- new Traefik pod rolled out alongside the old one, zero downtime' },
+          { label: 'A real regression, caught and fixed within minutes', code: '# added tls.hosts to the EXISTING catch-all Ingress (no host: field) --\ncurl http://20.235.48.180/\n# HTTP 404 -- bare-IP access broken immediately, a real regression\n\n# root cause: Traefik restricts a router\'s WHOLE rule (HTTP included)\n# to the tls.hosts list when the Ingress rule itself has no host field\n\n# fix: split into two Ingress objects\n# - azureops-copilot-ingress      (unchanged, catch-all, no TLS)\n# - azureops-copilot-ingress-tls  (host: devopspk.online + TLS, separate)\n\ncurl http://20.235.48.180/          # HTTP 200 -- fixed\ncurl -k --resolve devopspk.online:443:20.235.48.180 https://devopspk.online/\n# HTTP 200 -- domain HTTPS path works, tested via SNI override' },
+        ],
+        troubleshooting: [
+          'Adding a `tls.hosts` list to an Ingress rule with no explicit `host` field → Traefik\'s Kubernetes Ingress provider narrows the *entire* generated router to those hosts, silently breaking any other traffic (like bare-IP access) that same Ingress used to catch. Split TLS-scoped and catch-all routing into separate Ingress objects whenever they need different host scopes.',
+          'Registrar NS delegation not propagating instantly → confirmed via TWO independent resolvers (a local one and Google\'s `8.8.8.8`) before concluding propagation genuinely hadn\'t happened yet, rather than trusting a single, possibly-cached lookup.',
+          'A live site serving a self-signed "TRAEFIK DEFAULT CERT" for a configured domain isn\'t a config bug → it means the ACME HTTP-01 challenge hasn\'t succeeded yet, almost always because the domain doesn\'t resolve publicly to the origin yet; verified directly with `openssl s_client -servername <domain>` rather than assuming the cert resolver config was wrong.',
+        ],
+        interview: [
+          'Why does adding TLS configuration for specific hosts risk breaking traffic for hosts that were never mentioned in that config?',
+          'What has to be true, end to end, before Let\'s Encrypt\'s HTTP-01 challenge can succeed for a domain pointed at a new origin?',
+        ],
+        azureConnection:
+          "The real cost comparison this chapter actually demonstrates: Front Door Standard (~$35/month, and genuinely unavailable on this subscription anyway) versus Azure DNS (a few cents/month) plus a self-hosted Ingress controller's free ACME integration — the same functional outcome (a real domain, real TLS) for a fraction of the cost, once the multi-origin/global-edge value Front Door specifically adds isn't actually needed.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },
   { number: 8, title: 'Kubernetes Fundamentals', outcome: 'Understand the core Kubernetes control model before using AKS.' },
   { number: 9, title: 'Azure Kubernetes Service (AKS)', outcome: 'Deploy and operate a realistic workload on managed Kubernetes.' },
-  { number: 12, title: 'Azure Front Door & Production Edge', outcome: 'Understand when and how Front Door fits into a global Azure application.' },
   { number: 13, title: 'Infrastructure as Code with Terraform', outcome: 'Capture everything built across Modules 1-12 as code, and prove it by rebuilding from Terraform alone.' },
 ]

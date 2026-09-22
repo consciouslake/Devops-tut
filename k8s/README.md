@@ -12,6 +12,8 @@ it was never actually used by any app code.)
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 kubectl apply -f namespace.yaml -f qdrant.yaml -f tempo.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
 kubectl apply -f tempo-grafana-datasource.yaml   # adds Tempo to the monitoring namespace's Grafana
+kubectl apply -f traefik-tls-config.yaml         # HelmChartConfig, cluster-wide (kube-system)
+kubectl apply -f ingress-tls-domain.yaml         # devopspk.online / www, TLS via Let's Encrypt
 ```
 
 ## Notes
@@ -53,3 +55,17 @@ kubectl apply -f tempo-grafana-datasource.yaml   # adds Tempo to the monitoring 
   `OTEL_EXPORTER_OTLP_ENDPOINT` at it — tracing is no longer local-dev-only.
   `tempo-grafana-datasource.yaml` wires it into the `monitoring` namespace's
   Grafana as a non-default datasource, alongside Prometheus and Loki.
+- **TLS / custom domain (Module 12)**: `traefik-tls-config.yaml` is a
+  `HelmChartConfig` (the correct way to customize k3s's bundled Traefik)
+  adding a real Let's Encrypt ACME resolver, HTTP-01 challenge, persistent
+  `/data` for `acme.json`. `ingress-tls-domain.yaml` is a **separate**
+  Ingress from `ingress.yaml` — explicit `host: devopspk.online` /
+  `host: www.devopspk.online` rules plus the TLS/cert-resolver annotation.
+  It's deliberately split from the catch-all `ingress.yaml` rather than
+  adding `tls.hosts` to it directly: doing that once broke bare-IP access
+  entirely, because Traefik restricts a router's *whole* rule (HTTP
+  included) to the TLS hosts list when the Ingress rule itself has no
+  `host` field. Azure Front Door (this module's namesake) could not
+  actually be built — this subscription's Free Trial tier is explicitly
+  blocked from creating any Front Door resource, confirmed via a real,
+  failed `az afd profile create` call, not a guess.

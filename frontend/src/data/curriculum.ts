@@ -2201,6 +2201,52 @@ export const modules: Module[] = [
         azureConnection:
           "This closes Module 11's outcome directly: every real secret this app needs now comes from Key Vault via Managed Identity, not a hard-coded value, and every access to it — human or workload — was verified against both what it should and shouldn't be able to do.",
       },
+      {
+        id: 'defender-for-cloud-free-tier',
+        title: 'Defender for Cloud: the free tier is real, and it found real findings',
+        concept:
+          "Defender for Cloud's pricing is genuinely two-tier, and it's easy to assume the whole product is paid. **Foundational CSPM** — Secure Score, security recommendations, compliance benchmark mapping (NIST/CIS/PCI DSS), asset inventory — is completely free and, as of late 2026, moving to opt-in for *new* subscriptions but staying free regardless. The confusingly-named API field (`pricingTier: \"Standard\"` for the `FoundationalCspm` plan) is a historical naming artifact, not a sign it bills — verified via Microsoft's own current documentation before trusting it, not assumed from the CLI output alone. The **paid** plans are separate, explicitly-named ones (Defender for Servers, Storage, Key Vault, Containers, Resource Manager, APIs, etc.) that this project deliberately left off. Enabling the free tier surfaced a real Secure Score of **2.0/26 (7.7%)** on this subscription and a real list of unhealthy recommendations — some free and worth fixing (no security contact email configured, no high-severity alert notifications), some just upsells for the paid Defender plans this project isn't buying, and some genuine hardening opportunities logged rather than acted on immediately (NSG port restrictions, VM backup, disk encryption).",
+        whyDevops:
+          "A near-zero Secure Score isn't a failure state to be embarrassed by — it's exactly the kind of concrete, quantified signal that makes security posture legible instead of a vague feeling; the real value here is that this number and its underlying recommendations are backed by actual configuration on actual resources, not a checklist filled in from memory.",
+        handsOn: [
+          { label: 'Confirming the free tier is genuinely free before trusting it', code: 'az security pricing show --name FoundationalCspm\n# pricingTier: "Standard" -- looks paid, but this specific plan name\'s\n# "Standard" tier IS the free one (confirmed against Microsoft\'s current\n# docs, not assumed); the genuinely paid plan has a different name\n# entirely ("Defender CSPM"), and isn\'t present on this subscription' },
+          { label: 'Real Secure Score and real findings, not a demo', code: 'az security secure-scores list\n# Current: 2.0  Max: 26  Percentage: 7.69%\n\naz security assessment list --query "[?status.code==\'Unhealthy\'].displayName"\n# real findings included:\n# "Subscriptions should have a contact email address for security issues"\n# "Email notification for high severity alerts should be enabled"\n# "Microsoft Defender for Servers should be enabled" -- paid upsell, skipped' },
+          { label: 'Acted on the free, quick ones', code: 'az security contact create --name default \\\n  --emails "<real address>" \\\n  --alert-notifications state=On minimalSeverity=High \\\n  --notifications-by-role state=On roles=["Owner"]\n# real config change, confirmed via the API response -- the assessment\n# itself takes hours to re-run and flip to Healthy, not instant like an\n# RBAC test' },
+        ],
+        troubleshooting: [
+          'Trusting a CLI field name (`pricingTier: Standard`) at face value without checking current documentation → this exact field looks like it indicates a paid tier, but for the `FoundationalCspm` plan specifically it doesn\'t; verified against real, current Microsoft documentation before writing this chapter rather than guessing from the API shape alone.',
+          'Expecting a Defender for Cloud recommendation to flip to "Healthy" immediately after fixing the underlying config → its assessment engine runs on a periodic schedule (hours), unlike a live RBAC check that\'s enforced instantly on the next API call; the fix was verified via the real config API response instead of waiting on the recommendation status.',
+        ],
+        interview: [
+          'How would you verify whether a specific Defender for Cloud plan is actually free, rather than trusting a field name in the API response?',
+          'Why might a security recommendation stay "Unhealthy" for a while even after you\'ve genuinely fixed the underlying issue?',
+        ],
+        azureConnection:
+          "Real, deliberate cost-conscious decision consistent with the rest of this project: the free Foundational CSPM tier delivers genuine value (a real Secure Score and real findings on this actual subscription) without paying for any of the per-resource Defender plans this small project doesn't need.",
+      },
+      {
+        id: 'waf-self-hosted-k8s',
+        title: 'WAF: rebuilding the self-hosted pattern as a real Kubernetes workload',
+        concept:
+          "Real Azure WAF pricing was checked before deciding anything: Application Gateway v2 with WAF enabled runs roughly **$32.85/month fixed** (`$0.045/gateway-hour`) plus capacity-unit and data-transfer charges — a real, meaningful ongoing cost for a personal project. Module 6 had already proven the $0 alternative works (a self-hosted `owasp/modsecurity-crs` container blocking a real SQL-injection payload), but that container was decommissioned along with `azureops-lb` in Module 10. Rebuilt here as a genuine Kubernetes workload instead of a VM-level container: `waf-proxy` (Deployment + Service) sits between Traefik and `frontend`, and the live Ingress's `/` rule was repointed from `frontend` directly to `waf-proxy` — so every real request to the public app now passes through WAF inspection first, not as a parallel, bypassable path. Verified in two stages, not one: first internally (a throwaway pod hitting the WAF Service directly, confirming a normal request returns `200` and an SQLi-style payload returns `403`) *before* touching the live Ingress, then again against the actual public IP after the cutover — including the real WebSocket `/chat` path, which is the part most likely to break silently behind a reverse proxy and wasn't assumed to work without testing.",
+        whyDevops:
+          "Testing a new proxy layer internally before routing real, live public traffic through it is the same deploy-verify-cutover discipline already used for the Module 10 Load Balancer decommission — never point live traffic at something you haven't independently confirmed works, especially something that could silently break the WebSocket path that a plain HTTP test wouldn't catch.",
+        handsOn: [
+          { label: 'Deployed and verified internally first, before any live cutover', code: "kubectl apply -f waf.yaml   # Deployment + Service, BACKEND points at frontend\n\n# internal test, NOT yet in the live path:\nkubectl run waf-test --image=curlimages/curl -n azureops-copilot --rm -i -- \\\n  curl -s -o /dev/null -w 'HTTP %{http_code}\\n' 'http://waf-proxy/?id=1%27%20OR%20%271%27=%271'\n# HTTP 403 -- confirmed working before touching the live Ingress" },
+          { label: 'Only then: reroute the live Ingress', code: '# Ingress "/" path: frontend -> waf-proxy\nkubectl apply -f ingress.yaml' },
+          { label: 'Verified against the real public IP, including WebSocket', code: 'curl "http://20.235.48.180/?id=1%27%20OR%20%271%27=%271"\n# HTTP 403 -- real attack blocked on the live, public endpoint\n\ncurl -X POST http://20.235.48.180/ingest -d \'{"text":"...", "source":"waf-test"}\'\n# real ingest still works\n\n# real WebSocket /chat through the WAF -- the riskiest part to assume works\n# -> got a real, correct Gemini-generated response, upgrade path intact' },
+        ],
+        troubleshooting: [
+          'Assuming a reverse-proxy WAF will transparently pass through a WebSocket upgrade just because plain HTTP works → verified explicitly with a real `/chat` query after the cutover, specifically because this is exactly the kind of thing that silently breaks with a naive reverse-proxy config and a plain `curl` test to `/` wouldn\'t catch.',
+          'Rerouting live production Ingress traffic to a new backend before independently verifying that backend → tested internally first (pod-to-Service, no public exposure) and only touched the live Ingress after that passed, limiting the blast radius of a bad config to zero real traffic.',
+        ],
+        interview: [
+          'Why test a new proxy layer from inside the cluster before routing real external traffic to it, rather than testing directly against production?',
+          'What specifically about a WebSocket connection makes it a higher-risk thing to silently break behind a new reverse proxy, compared to a plain HTTP request?',
+        ],
+        azureConnection:
+          "Directly mirrors Module 6's original WAF chapter (self-hosted ModSecurity chosen over Application Gateway's WAF SKU) and Module 10's Load Balancer decommission discipline (deploy new, verify new, only then cut over) — the same real cost-conscious decision and the same real deployment safety pattern, both proven twice now in this project.",
+      },
     ],
   },
 ]

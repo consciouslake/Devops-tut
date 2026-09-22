@@ -9,7 +9,7 @@ no new Azure compute cost.
 
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-kubectl apply -f namespace.yaml -f qdrant.yaml -f redis.yaml -f backend.yaml -f frontend.yaml -f ingress.yaml
+kubectl apply -f namespace.yaml -f qdrant.yaml -f redis.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
 ```
 
 ## Notes
@@ -37,3 +37,11 @@ kubectl apply -f namespace.yaml -f qdrant.yaml -f redis.yaml -f backend.yaml -f 
 - **Rate limiting**: `/ingest` and `/chat` are both limited in-app
   (`backend/rate_limit.py`) to protect the real, usage-billed Gemini API
   from being run up now that the app is public.
+- **WAF**: `waf.yaml` deploys `owasp/modsecurity-crs:nginx` (Module 6's
+  self-hosted WAF pattern, rebuilt as a real Kubernetes workload) in front of
+  `frontend`. The Ingress's `/` path now targets the `waf-proxy` Service
+  instead of `frontend` directly — chosen over Application Gateway/Front
+  Door WAF (~$33/month+ for App Gateway v2 alone) for $0 marginal cost.
+  Verified against the live public IP: a real SQL-injection-style payload
+  gets `HTTP 403`, normal HTTP and WebSocket (`/chat`) traffic passes
+  through unaffected.

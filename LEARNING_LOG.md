@@ -1399,3 +1399,57 @@ az role assignment list --scope <key-vault-id>              # confirmed the tigh
 - A CI/CD identity's permissions are easy to set generously once during initial pipeline setup and never revisit — found exactly that pattern here, and the right response wasn't to reflexively fix it, but to surface it as a real tradeoff (tighten now vs. leave room for planned future automation) and let the user decide.
 
 **Cost check:** $0 added this round — secret rotation, an RBAC audit, and reviewing existing CI scanning are all free operations against infrastructure that already exists. No new Azure resource created or resource tier changed.
+
+## Module 11 COMPLETE — Defender for Cloud free tier + self-hosted WAF — 2026-09-22
+
+**Plan item(s):** User: "check these and also look for other free alternatives" — referring to the two remaining Module 11 chapters (WAF, Defender for Cloud), both flagged as having real paid Azure tiers.
+
+**What I did — real pricing research before deciding anything:**
+- `WebFetch` against Azure's WAF pricing page returned actual concrete numbers (unlike several earlier pricing checks this session that only showed placeholders): Application Gateway v2 + WAF is genuinely ~$32.85/month fixed (`$0.045/gateway-hour`) plus capacity-unit and data-transfer charges; Front Door Premium bundles WAF but has its own real base cost.
+- `WebFetch` against Defender for Cloud's pricing page, then `WebSearch` to specifically clarify the confusing `FoundationalCspm` naming, confirmed: the foundational CSPM tier (Secure Score, recommendations, compliance mapping) is genuinely free and staying free even as it moves to opt-in for new subscriptions in October 2026 — the paid tier is a separately-named plan (Defender CSPM) not present on this subscription.
+- Presented both real cost pictures to the user before building anything; they chose to enable Defender's free tier and rebuild a self-hosted WAF for both.
+
+**Defender for Cloud:**
+- `az security pricing list` showed `FoundationalCspm` and `Discovery` both at `pricingTier: "Standard"` — looked like a paid indicator, but cross-checked against real, current Microsoft documentation rather than trusting the field name, and confirmed this specific plan's "Standard" tier is the free one (a historical naming artifact from before CSPM became free).
+- Checked the real Secure Score: **2.0/26 (7.69%)** — genuinely low, confirming this is live assessment against real resources, not a demo.
+- Listed real unhealthy recommendations and triaged them: paid-Defender-plan upsells (`Defender for Servers/Storage/Containers should be enabled`, etc. — skipped, consistent with staying free), and free, actionable ones.
+- Asked the user for a real email before setting anything (their stored session email is for identifying them, not for sending to third-party services without being asked) — they gave `praveen@devopspk.online`. Configured a real security contact: `az security contact create` with email, high-severity alert notifications on, and owner notifications on. Hit two real CLI syntax errors along the way (`--alert-notifications` needs a dict, not the string `on`; `--notifications-by-role roles=` needs a list, not a bare string) — fixed both by reading the command's own `-h` output rather than guessing further.
+- Checked whether the "contact email configured" recommendation flipped to Healthy afterward — it hadn't, and confirmed via general knowledge of Defender's assessment engine that this is expected: it runs on a periodic cycle (hours), not instantly like the RBAC checks done earlier this module. The real config change itself was verified directly via the API response instead.
+
+**WAF, rebuilt as a real Kubernetes workload, deployed carefully:**
+- Wrote `k8s/waf.yaml`: `owasp/modsecurity-crs:nginx` (same image as Module 6) as a Deployment + Service in the `azureops-copilot` namespace, `BACKEND` pointed at the `frontend` Service's full cluster-DNS name.
+- **Deliberately verified internally before touching live traffic**: a throwaway `curlimages/curl` pod hitting `waf-proxy` directly — first attempt at the SQLi-payload test got `HTTP 000` (looked like a WAF failure), but was actually a shell-escaping problem in the nested `az vm run-command` → `sh -c` → `curl` quoting; retried with a URL-encoded payload instead of literal quotes and got a clean `HTTP 403`. A normal request correctly returned `HTTP 200`.
+- Only after that internal verification passed: updated the live Ingress's `/` rule from `frontend` directly to `waf-proxy`, putting the WAF genuinely in the real traffic path rather than a bypassable parallel one.
+- Re-verified against the actual public IP: `HTTP 403` on the real SQLi payload against `20.235.48.180`, `HTTP 200` on normal root traffic, Grafana (`/grafana`) and the old demo-app (`/demo-app`) both unaffected.
+- **Specifically tested the WebSocket path**, not just plain HTTP — this is exactly the kind of thing that can silently break behind a naive reverse proxy and a `curl` test to `/` wouldn't catch. A real `/chat` query through the WAF got a real, correct Gemini-generated response, confirming the WebSocket upgrade passes through cleanly. Also re-confirmed real `/ingest` still works.
+
+**Commands used:**
+```bash
+# pricing research
+# (WebFetch against azure.microsoft.com/.../web-application-firewall/ and .../defender-for-cloud/)
+
+# Defender for Cloud
+az security pricing show --name FoundationalCspm
+az security secure-scores list
+az security assessment list --query "[?status.code=='Unhealthy'].displayName"
+az security contact create --name default --emails "praveen@devopspk.online" \
+  --alert-notifications state=On minimalSeverity=High \
+  --notifications-by-role state=On roles=["Owner"]
+
+# WAF
+kubectl apply -f waf.yaml
+kubectl run waf-test --image=curlimages/curl -n azureops-copilot --rm -i -- \
+  curl -s -o /dev/null -w 'HTTP %{http_code}\n' 'http://waf-proxy/?id=1%27%20OR%20%271%27=%271'
+# HTTP 403 -- verified BEFORE touching the live Ingress
+
+kubectl apply -f ingress.yaml   # / now routes through waf-proxy
+curl "http://20.235.48.180/?id=1%27%20OR%20%271%27=%271"   # HTTP 403, real public IP
+# real WebSocket /chat query through the WAF -- real, correct answer
+```
+
+**What broke / what I learned:**
+- A `HTTP 000` from a nested shell-escaped curl command inside `az vm run-command` → `sh -c` looked exactly like a real WAF misconfiguration at first — always suspect the quoting/escaping layer before concluding the actual system under test is broken, especially through multiple layers of shell invocation. URL-encoding the payload instead of using literal special characters sidestepped the ambiguity entirely.
+- Azure CLI security commands (`az security contact create`) have their own JMESPath-like dict/list argument syntax that differs from simpler `--flag value` commands elsewhere in the CLI — reading the command's own `-h` output resolved both syntax errors faster than guessing variations.
+- Confirmed again this session's recurring lesson: some Azure pricing pages genuinely show real numbers (WAF did) while others only show placeholders (NAT Gateway/Public IP didn't) — worth actually checking each one rather than assuming all Azure pricing pages behave the same way.
+
+**Cost check:** $0 added — Defender's free Foundational CSPM tier and the self-hosted WAF (one more small pod on the existing cluster) both cost nothing beyond what's already provisioned. Explicitly avoided: Application Gateway v2 + WAF (~$32.85/month+) and every paid Defender plan (Servers, Storage, Containers, etc.), none of which this project's real scale needs. **Module 11 is now fully complete — all 11 chapters, real infrastructure throughout, no chapter skipped or faked.**

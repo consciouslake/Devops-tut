@@ -1998,13 +1998,113 @@ export const modules: Module[] = [
       },
     ],
   },
+  {
+    id: 'security-governance',
+    number: 11,
+    mono: 'SG',
+    title: 'Azure Security & Governance',
+    outcome: 'Secure the application and its delivery pipeline without hard-coded secrets.',
+    chapters: [
+      {
+        id: 'key-vault-managed-identity',
+        title: 'Key Vault + Managed Identity: migrating real secrets off .env',
+        concept:
+          "A real Key Vault (`azureops-copilot-kv`) was created in **RBAC authorization mode** — the modern access model, where even the vault's own creator has zero access until explicitly granted a role, as opposed to the legacy access-policy model. This was verified directly: the very first `az keyvault secret set` attempt, run as the account that just created the vault, was correctly `403 Forbidden`. Two role assignments were needed and handed to the user to run themselves (this project's standing rule: any Azure IAM/RBAC role assignment is a permission grant, never executed autonomously) — `Key Vault Secrets Officer` for the human account doing the migration, and `Key Vault Secrets User` for a Managed Identity that would read the secrets back. `app-vm1` was given a system-assigned Managed Identity (safe to enable directly — it creates an identity with zero permissions until a role is granted). The app's two real secrets (`GEMINI_API_KEY`, `JWT_SECRET`) were then migrated from the local `.env` file into the vault.",
+        whyDevops:
+          "RBAC-mode Key Vault forces you to be explicit about who can read or write secrets, with no implicit \"the creator can always access it\" escape hatch — the 403 hit immediately by the vault's own creator is the concrete proof this actually works as intended, not just a theoretical security property.",
+        handsOn: [
+          { label: 'Real RBAC enforcement, verified before any role existed', code: 'az keyvault create --name azureops-copilot-kv --enable-rbac-authorization true ...\naz keyvault secret set --vault-name azureops-copilot-kv --name test-secret --value test\n# 403 Forbidden -- even the vault creator has no access without an explicit role' },
+          { label: 'Two role assignments, run by the user (never autonomously)', code: 'az role assignment create --role "Key Vault Secrets Officer" \\\n  --assignee-object-id <human account> --scope <vault-id>\naz role assignment create --role "Key Vault Secrets User" \\\n  --assignee-object-id <app-vm1 Managed Identity> --scope <vault-id>' },
+          { label: 'Migrating the real secrets', code: 'az keyvault secret set --vault-name azureops-copilot-kv --name gemini-api-key --value "<real key>"\naz keyvault secret set --vault-name azureops-copilot-kv --name jwt-secret --value "<real value>"' },
+        ],
+        troubleshooting: [
+          'Assuming the account that created a Key Vault automatically has access to its secrets → true for the legacy access-policy model, false for RBAC authorization mode; a separate role assignment is required regardless of who created the vault.',
+          'Confusing a vault-level resource permission (e.g., Contributor on the Key Vault resource itself) with a data-plane permission (reading/writing secrets inside it) → these are genuinely separate RBAC scopes in the modern model; a Key Vault \"Contributor\" on the resource can delete the vault but still can\'t read a secret without an explicit data-plane role like `Key Vault Secrets User`.',
+        ],
+        interview: [
+          'What\'s the practical difference between Key Vault\'s legacy access-policy model and its RBAC authorization mode?',
+          'Why might an account with Owner/Contributor at the subscription level still get a 403 trying to read a Key Vault secret?',
+        ],
+        azureConnection:
+          "The exact same distinction already learned the hard way in Module 5 (subscription Owner ≠ Storage blob data access, since control-plane and data-plane permissions are separate) shows up again here in Key Vault's RBAC model — a consistent Azure IAM pattern across services, not a one-off quirk.",
+      },
+      {
+        id: 'managed-identity-verification',
+        title: 'Proving Managed Identity works: positive and negative real tests',
+        concept:
+          "Managed Identity's actual mechanism was verified directly rather than trusted on faith: `app-vm1` has no `az` CLI installed, so its Managed Identity token was fetched the same way any real process on the VM would — a plain `curl` to the Instance Metadata Service (`http://169.254.169.254/metadata/identity/oauth2/token`, a link-local address only reachable from inside the VM), then that token used as a Bearer token against Key Vault's REST API directly. `app-vm1` (with the `Key Vault Secrets User` role) got a real `200` with the actual secret. Critically, the *negative* case was verified too, not assumed: `app-vm2` was given its own Managed Identity but deliberately **no** role assignment — it still gets a perfectly valid IMDS token (proving the identity mechanism itself works), but a real `403 Forbidden` (`ForbiddenByRbac`) from Key Vault. This is the concrete proof that access is controlled by *identity and role*, not by network location — both VMs are in the same subnet, only one is authorized.",
+        whyDevops:
+          "Verifying only the success case is a common half-measure — it proves the happy path works, but not that the system actually enforces anything. Deliberately testing the denial case (an identity that exists but isn't authorized) is what separates \"I configured RBAC\" from \"I confirmed RBAC actually blocks what it should.\"",
+        handsOn: [
+          { label: 'Getting a real Managed Identity token via raw IMDS (no az CLI needed)', code: "TOKEN=$(curl -s -H 'Metadata:true' \\\n  'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net' \\\n  | grep -o '\"access_token\":\"[^\"]*\"' | cut -d'\"' -f4)" },
+          { label: 'Positive case: app-vm1, role granted', code: "curl -H \"Authorization: Bearer $TOKEN\" \\\n  'https://azureops-copilot-kv.vault.azure.net/secrets/gemini-api-key?api-version=7.4'\n# HTTP 200 -- real secret returned (value length checked, never printed to any output)" },
+          { label: 'Negative case: app-vm2, identity exists, NO role granted', code: "# same IMDS token flow, from app-vm2 instead\ncurl -H \"Authorization: Bearer $TOKEN\" \\\n  'https://azureops-copilot-kv.vault.azure.net/secrets/gemini-api-key?api-version=7.4'\n# HTTP 403: {\"error\":{\"code\":\"Forbidden\", ...,\n#   \"innererror\":{\"code\":\"ForbiddenByRbac\"}}}" },
+        ],
+        troubleshooting: [
+          'A Key Vault secret\'s actual value was never printed to any command output during this verification — the auto-mode safety classifier correctly blocked one attempt to do so directly (`az keyvault secret show --query value`), which is exactly the intended behavior: prove access works via status codes and value length, not by materializing the real credential in logs.',
+          'When a VM has no `az` CLI available, the raw IMDS HTTP flow (which is what `az login --identity` and every Azure SDK\'s `DefaultAzureCredential` do under the hood anyway) is a direct, dependency-free way to verify Managed Identity is genuinely working.',
+        ],
+        interview: [
+          'Walk through exactly what happens, at the HTTP level, when a VM with a system-assigned Managed Identity authenticates to another Azure service.',
+          'Why does a valid IMDS token not guarantee access to a specific resource?',
+        ],
+        azureConnection:
+          "This is the VM-based counterpart to the GitHub Actions OIDC federation built in Module 7 — same underlying idea (a trusted identity gets a short-lived token with no stored long-term credential anywhere), different token issuer (IMDS on the VM vs. GitHub's OIDC provider).",
+      },
+      {
+        id: 'network-security-regression',
+        title: 'A real regression: losing internet egress, and choosing how to fix it',
+        concept:
+          "The very first attempt to reach Key Vault from `app-vm1` failed completely (`HTTP 000` — no connection at all), despite DNS resolving correctly and NSG/routing looking fine. Root cause: Module 10's decommission of `azureops-lb` had silently removed `app-vm1`/`app-vm2`'s only path to the internet — a Standard Load Balancer's rule provides implicit outbound SNAT for its backend pool by default, and neither VM has its own public IP or NAT Gateway. Two increasingly strong recovery attempts were tried and both failed to fix it: `az vm restart` (only reboots the OS) and a full `az vm deallocate` + `az vm start` cycle (expected to force Azure to reassess \"default outbound access\" eligibility — it didn't, likely due to the same Free Trial subscription restrictions hit in Module 8's quota wall). The cluster itself stayed fully healthy through both attempts (all 3 nodes `Ready` the whole time — the same HA guarantee proven in Module 8). Real NAT Gateway and Standard Public IP pricing was checked via Azure's own pricing pages — both only show placeholder rates without the region-specific calculator — and the honest tradeoff was presented to the user before creating anything: a NAT Gateway (purpose-built for outbound-only access, no inbound exposure, covers both VMs with one resource) was chosen over a per-VM public IP.",
+        whyDevops:
+          "Decommissioning infrastructure has side effects that aren't always visible at decommission time — a Load Balancer's job looks purely inbound, but Standard SKU rules quietly provide outbound SNAT too unless explicitly disabled. This is exactly the kind of thing a network security review chapter should catch: not by predicting every side effect in advance, but by actually testing real connectivity after any change to shared network infrastructure, not just assuming the intended change was the only effect.",
+        handsOn: [
+          { label: 'Diagnosing: real egress test, not assumed', code: 'curl --max-time 8 -o /dev/null -w \'HTTP %{http_code}\\n\' https://management.azure.com/\n# HTTP 000 -- no connection at all, not even a real HTTP error' },
+          { label: 'Two fixes tried, neither worked', code: 'az vm restart --name app-vm1          # OS reboot only -- no change\naz vm deallocate --name app-vm1 && az vm start --name app-vm1   # full reallocation -- still no change\n# cluster stayed healthy throughout both (all 3 nodes Ready) -- confirms this\n# was a pure networking issue, not a cluster-health one' },
+          { label: 'The real fix: a NAT Gateway, after an honest cost conversation', code: 'az network public-ip create --name app-subnet-natgw-pip --sku Standard\naz network nat gateway create --name app-subnet-natgw --public-ip-addresses app-subnet-natgw-pip\naz network vnet subnet update --name app-subnet --nat-gateway app-subnet-natgw\n\ncurl --max-time 8 -o /dev/null -w \'HTTP %{http_code}\\n\' https://management.azure.com/\n# HTTP 400 -- a REAL response this time (the endpoint itself rejects a bare\n# GET without auth) -- confirms egress is genuinely restored' },
+        ],
+        troubleshooting: [
+          'Deleting a Load Balancer without checking whether its backend pool relied on its implicit outbound SNAT → the inbound traffic path (the LB\'s obvious job) isn\'t the only thing it was doing; always re-verify a VM\'s actual internet reachability after removing any LB it sat behind, don\'t just confirm the inbound scenario you intended to change.',
+          '`az vm restart` and even `az vm deallocate`/`az vm start` are not guaranteed to restore "default outbound access" — verify with a real `curl` test rather than assuming a reboot fixed a networking issue.',
+        ],
+        interview: [
+          'Why would deleting a Load Balancer break outbound internet access for VMs behind it, when the LB\'s purpose looks purely inbound?',
+          'What\'s the security advantage of a NAT Gateway over a public IP directly on a VM, for a workload that only needs outbound access?',
+        ],
+        azureConnection:
+          "This regression and its fix directly extend Module 10's Load Balancer decommission — the cost-conscious decision to remove `azureops-lb` was correct, but incomplete without also verifying every real dependency on it, not just the one (inbound traffic) that was the deliberate focus of that change.",
+      },
+      {
+        id: 'localhost-binding-and-azure-policy',
+        title: 'Closing two real gaps: unauthenticated exposure and untagged resources',
+        concept:
+          "Two more real findings, both fixed at $0 cost. First: reading the actual frontend code (`AIMentor.tsx`) revealed `/chat` is called directly by a live, in-app chatbot widget with no login system at all — this is a genuinely single-user personal tool, not a multi-tenant app, so a full auth system would be disproportionate and would require also updating the frontend to attach credentials. The simpler, correctly-scoped fix: `docker-compose.yml`'s backend port was published as `8000:8000` (all interfaces) while Qdrant/Redis were already correctly bound to `127.0.0.1` only — changed to match, verified via `docker port` showing the binding actually changed, and confirmed the app (which reaches the backend over the internal Docker network via nginx's `proxy_pass`, entirely separate from the host-published port) was completely unaffected. Second: Azure Policy's built-in \"Require a tag on resources\" definition (free — built-in policy definitions have no cost) was assigned to the resource group, requiring a `project` tag on any new resource. Verified with a real enforcement test, not just an audit-mode assumption: creating a test NSG *without* the tag was genuinely denied (`RequestDisallowedByPolicy`); the same NSG *with* the tag succeeded immediately, no propagation delay. All 24 tag-able existing resources in the resource group were then brought into compliance.",
+        whyDevops:
+          "Matching the fix to the actual threat model matters as much as fixing the gap at all — a full login system for an app with no concept of \"users\" would be complexity theater, not real security. The localhost-binding fix is the proportionate answer to \"who can currently reach this,\" the same way the NAT Gateway was the proportionate (not maximal) answer to the egress regression.",
+        handsOn: [
+          { label: 'The disproportionate-fix trap, avoided', code: "# /chat is called directly by AIMentor.tsx with no login UI anywhere --\n# adding JWT auth would mean EITHER updating the frontend to attach a\n# token (real added complexity for a single-user tool) OR silently\n# breaking the one feature that already works. Chose the proportionate\n# fix instead: stop anything outside this machine from reaching it." },
+          { label: 'docker-compose.yml: matching the existing Qdrant/Redis pattern', code: "backend:\n  ports:\n    - '127.0.0.1:8000:8000'   # was '8000:8000' -- all interfaces before\n\n# verified: docker port devops-tut-backend-1\n# 8000/tcp -> 127.0.0.1:8000  (was 0.0.0.0:8000)\n# frontend unaffected -- it reaches backend:8000 over the internal\n# Docker network via nginx proxy_pass, not through this host port at all" },
+          { label: 'Azure Policy: a real deny test, not an assumption', code: 'az policy assignment create --name require-project-tag \\\n  --policy "Require a tag on resources" --params \'{"tagName":{"value":"project"}}\'\n\naz network nsg create --name policy-test-nsg-notag\n# RequestDisallowedByPolicy -- denied immediately, no propagation delay\n\naz network nsg create --name policy-test-nsg-tagged --tags project=azureops-copilot\n# succeeds -- confirms the policy discriminates correctly, not a blanket block' },
+        ],
+        troubleshooting: [
+          'Reaching for a full authentication system as the default "secure it" answer → check who can actually reach the thing and what it would cost to add real auth (including whether the frontend needs updating too) before assuming the heaviest option is the right one; a network-level fix was correct and sufficient here.',
+          'Assuming an Azure Policy assignment needs time to propagate before it\'s enforced → tested directly instead of waiting on faith, and it was already blocking real resource creation immediately.',
+        ],
+        interview: [
+          'How would you decide between fixing an exposure at the network layer versus the application layer?',
+          'What\'s the actual cost of Azure Policy itself, and why does that make tagging governance an easy default to turn on?',
+        ],
+        azureConnection:
+          "Both fixes are $0: the port-binding change is pure Docker Compose config, and built-in Azure Policy definitions carry no charge — a reminder that not every security/governance gap needs paid tooling (Defender for Cloud, Azure Policy's paid guest-configuration add-ons) to close.",
+      },
+    ],
+  },
 ]
 
 export const stubModules: { number: number; title: string; outcome: string }[] = [
   { number: 7, title: 'CI/CD with GitHub Actions', outcome: 'Create a repeatable build-test-scan-deploy pipeline.' },
   { number: 8, title: 'Kubernetes Fundamentals', outcome: 'Understand the core Kubernetes control model before using AKS.' },
   { number: 9, title: 'Azure Kubernetes Service (AKS)', outcome: 'Deploy and operate a realistic workload on managed Kubernetes.' },
-  { number: 11, title: 'Azure Security & Governance', outcome: 'Secure the application and its delivery pipeline without hard-coded secrets.' },
   { number: 12, title: 'Azure Front Door & Production Edge', outcome: 'Understand when and how Front Door fits into a global Azure application.' },
   { number: 13, title: 'Infrastructure as Code with Terraform', outcome: 'Capture everything built across Modules 1-12 as code, and prove it by rebuilding from Terraform alone.' },
 ]

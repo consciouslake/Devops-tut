@@ -1258,3 +1258,50 @@ curl --max-time 8 https://management.azure.com/   # HTTP 400 -- real response, e
 - Once again, resisted stating an exact, unverified Azure price under time pressure (NAT Gateway / Public IP) — `WebFetch` against the real pricing pages came back with placeholders both times.
 
 **Cost check:** Real, ongoing cost added this session: Key Vault (Standard SKU, per-operation billing — negligible at this app's real secret-read volume) and a NAT Gateway + its Standard public IP (hourly + per-GB, exact rate not stated since Azure's own pricing pages only show placeholders). This is a genuine, deliberate tradeoff: the app's two real secrets are no longer sitting in a plaintext `.env` file, and `app-vm1`/`app-vm2` have real internet egress again — both are load-bearing requirements, not optional polish, so the cost was accepted rather than avoided.
+
+## Module 11 (continued) — proportionate exposure fix + Azure Policy tagging — 2026-09-22
+
+**Plan item(s):** User asked to continue Module 11 with an explicit reminder to weigh cost-effectiveness at every step, not just per-module.
+
+**What I did — the unauthenticated-exposure finding, fixed proportionately:**
+- Investigated adding real JWT auth to `/ingest` and `/chat` (the natural next step after finding `JWT_SECRET` unused) — but first checked the actual frontend code (`AIMentor.tsx`) and found `/chat` is called directly by a live, in-app chatbot widget with zero login system anywhere in the app. This is a genuinely single-user personal tool, not multi-tenant.
+- Flagged the real tradeoff to the user before writing any auth code: adding real JWT auth would require also updating the frontend to attach a token, or it would silently break the AI Mentor widget the user actually uses.
+- User chose the proportionate fix instead: `docker-compose.yml`'s backend port was `8000:8000` (all interfaces) while Qdrant/Redis/Tempo were already correctly bound to `127.0.0.1` only. Changed to `127.0.0.1:8000:8000` to match.
+- Verified via `docker port devops-tut-backend-1` that the binding genuinely changed (was `0.0.0.0:8000`, now `127.0.0.1:8000`), and confirmed the app was completely unaffected — the frontend reaches the backend over the internal Docker network (`nginx`'s `proxy_pass http://backend:8000`), entirely separate from the host-published port. Health check and test suite both still pass.
+
+**What I did — Azure Policy tagging governance (free — built-in policy definitions have no cost):**
+- Checked current state first: zero resources in the resource group had any tags at all.
+- Assigned the built-in "Require a tag on resources" policy (`871b6d14-...`) at resource-group scope, requiring a `project` tag on any new resource.
+- Verified with a real enforcement test rather than trusting audit-mode documentation: created a test NSG *without* the tag — genuinely denied with `RequestDisallowedByPolicy`, no propagation delay. The same NSG *with* the tag succeeded immediately. Deleted the test resource afterward.
+- Brought all 24 tag-able existing resources in the resource group into compliance with `project=azureops-copilot` (one exception: a private endpoint's auto-managed NIC, which Azure doesn't expose independently for tagging).
+- Hit a real, confusing intermittent issue during the bulk-tag loop: `az tag update --operation Merge` reported `Bad Request` for every resource in a tight loop, but checking the actual resource state afterward showed most had genuinely succeeded anyway — the CLI's error reporting was unreliable under rapid successive calls, not the underlying API. Verified the *real* state directly (`az resource list --query "[].tags"`) rather than trusting the loop's exit codes, and individually retried (with small delays, and `az resource tag` instead of `az tag update` for the couple of stubborn ones like the RBAC-mode Key Vault) whatever was actually still untagged.
+
+**Commands used:**
+```bash
+# port binding
+# docker-compose.yml: '8000:8000' -> '127.0.0.1:8000:8000'
+docker port devops-tut-backend-1   # confirmed 127.0.0.1:8000, not 0.0.0.0
+curl http://localhost:8000/health  # still works
+curl http://localhost:5173/        # frontend still works, unaffected
+
+# Azure Policy
+az policy definition list --query "[?contains(displayName, 'Require a tag')]"
+az policy assignment create --name require-project-tag \
+  --policy 871b6d14-10aa-478d-b590-94f262ecfa99 \
+  --params '{"tagName":{"value":"project"}}' --scope <resource-group-id>
+az network nsg create --name policy-test-nsg-notag        # RequestDisallowedByPolicy
+az network nsg create --name policy-test-nsg-tagged --tags project=azureops-copilot   # succeeds
+az network nsg delete --name policy-test-nsg-tagged
+
+# bulk tagging, with real-state verification instead of trusting loop exit codes
+az resource list --resource-group azureops-copilot-rg --query "[].id" -o tsv
+az tag update --resource-id <id> --operation Merge --tags project=azureops-copilot
+az resource list --resource-group azureops-copilot-rg --query "[].{name:name, hasTag:tags.project}"
+```
+
+**What broke / what I learned:**
+- Almost built a disproportionate fix (full JWT auth requiring a frontend change) for what was actually a simple network-exposure problem — reading the real frontend code before choosing a fix avoided both over-engineering and a silent breakage of a feature the user actually uses.
+- `az tag update --operation Merge` run in a tight loop reported failures that weren't real — always verify the actual resource state after a bulk operation reports errors, rather than assuming the reported exit code is authoritative, especially under rapid successive API calls.
+- Azure Policy enforcement (at least for this built-in tag-requirement policy) is immediate, not eventually-consistent — no need to wait or assume propagation delay before testing it.
+
+**Cost check:** $0 added this round — the port-binding fix is pure Docker Compose config, and Azure Policy's built-in definitions (including the tag-requirement one used here) carry no charge. Both real gaps (unauthenticated local exposure, ungoverned tagging) closed without any new Azure spend, in contrast to the Key Vault/NAT Gateway work earlier this module which did have real, deliberate cost.

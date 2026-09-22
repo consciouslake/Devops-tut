@@ -385,6 +385,14 @@ whichever Module 8 chapter actually builds Ingress + deploys a real
 workload through it.
 is more likely a thin connection proxy than a full LB replacement.
 
+**Resolved, 2026-09-22:** Final call made and executed. `azureops-lb` (Standard SKU — genuine ongoing cost, confirmed via `az network lb show`; exact rate not stated here since Azure's own pricing page only shows placeholder figures without the region-specific calculator) was still actively serving real traffic to the Module 1/6 demo stack (`pyapp.service` behind a `waf-proxy` ModSecurity container) on `app-vm1`/`app-vm2`. With Module 10 having now proven Traefik Ingress genuinely routing public traffic (Grafana, reachable at `http://20.235.48.180/`), there was no remaining reason to keep a paid LB running in parallel. Cutover:
+- Redeployed the same demo app (identical `app.py` — `Hello from <hostname>` / `/health`) as a 2-replica Kubernetes Deployment + Service in the k3s cluster, with real readiness/liveness probes.
+- Added a path-based Ingress rule (`/demo-app`) on the same Traefik instance already serving Grafana at `/` — verified both coexist correctly on one public IP via path-prefix routing, no separate LB/IP needed.
+- Verified real load balancing: repeated `curl http://20.235.48.180/demo-app` alternated between both pod hostnames, exactly like the original 2-VM LB setup.
+- Deleted `azureops-lb` and its public IP (`135.235.240.52`) — confirmed gone (`az network lb list` empty, old IP unreachable).
+- Removed the now-unneeded NSG rules (`Allow-LB-Probe-8000/8080`, `Allow-Internet-8000/8080` on `app-subnet-nsg`) and stopped/disabled the redundant `pyapp.service` + `waf-proxy` container on both VMs.
+- **Cost outcome:** one real, ongoing-cost Azure resource (Standard Load Balancer + its public IP) eliminated; the same functional behavior (load balancing, health checks) now runs at $0 marginal cost on infrastructure already paid for.
+
 ## Out of scope initially
 
 Jenkins, AWS/GCP breadth, deep database internals, advanced distributed-systems theory, and large-scale platform engineering are deferred until the core Azure DevOps path is complete.

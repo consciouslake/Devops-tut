@@ -1752,7 +1752,7 @@ export const modules: Module[] = [
           'How does k3s provide `type=LoadBalancer` functionality without a cloud provider integration?',
         ],
         azureConnection:
-          'This chapter is where the deferred Module 6 decision (managed `azureops-lb` vs. software load balancing) gets a real answer for anything running inside this cluster: Traefik + Kubernetes Services already provide that function natively, verified with a real external request — no separate HAProxy build needed for cluster-hosted workloads, only for the still-standalone `app-vm1`/`app-vm2` VM-based deployment from Module 6, which remains a deliberate, separate comparison point.',
+          'This chapter is where the deferred Module 6 decision (managed `azureops-lb` vs. software load balancing) gets a real answer for anything running inside this cluster: Traefik + Kubernetes Services already provide that function natively, verified with a real external request — no separate HAProxy build needed for cluster-hosted workloads. (Update, Module 10: this comparison was later resolved for real — `azureops-lb` was decommissioned once this Ingress path was proven in production use for Grafana; see Module 10\'s final chapter.)',
       },
       {
         id: 'rolling-updates-rollback',
@@ -1948,6 +1948,29 @@ export const modules: Module[] = [
         ],
         azureConnection:
           "This is the direct self-hosted equivalent of Azure Monitor Action Groups — Alertmanager's receivers/routes are the same concept (who gets notified, how, for which alert), running at $0 on the same k3s cluster rather than as a billed Azure resource.",
+      },
+      {
+        id: 'resolving-the-load-balancer-decision',
+        title: 'Closing the loop: decommissioning azureops-lb',
+        concept:
+          "A decision deliberately parked since Module 6 (\"is a paid Standard Load Balancer worth it, or should this be software-based\") finally had a real alternative to compare against, once this module proved Traefik Ingress genuinely serving public traffic (Grafana). Before touching anything live, the actual state was checked first: `azureops-lb` is Standard SKU (real, ongoing cost — confirmed via `az network lb show`; Azure's own pricing page shows only placeholder rates without the region-specific calculator, so no exact figure is claimed here), and it was still genuinely serving traffic to the Module 1/6 demo stack (`pyapp.service` behind a `waf-proxy` container). The cutover: the identical demo app was redeployed as a 2-replica Kubernetes Deployment, exposed via a **path-based** Ingress rule (`/demo-app`) on the *same* Traefik instance already serving Grafana at `/` — proving two independent services can share one public IP through path-prefix routing, no second LB or IP required. Real load balancing was verified (alternating pod hostnames over repeated requests) *before* deleting anything. Only then was `azureops-lb`, its public IP, and its now-orphaned NSG rules removed, and the redundant standalone VM services stopped.",
+        whyDevops:
+          "This is what closing a deliberately deferred architectural decision looks like in practice: not guessing upfront, not migrating impulsively the moment an alternative exists, but waiting until the alternative is actually proven under real use (Grafana's public traffic) and then cutting over with verification at every step — deploy new, prove new works, only then delete old. The order matters as much as the decision itself.",
+        handsOn: [
+          { label: 'Confirming the real, ongoing cost before deciding anything', code: "az network lb show --resource-group <rg> --name azureops-lb --query \"sku.name\"\n# \"Standard\" -- genuine per-rule-hour + data-processing cost, not Basic/free" },
+          { label: 'Path-based coexistence: two services, one public IP, one Traefik instance', code: "# Grafana:    path \"/\"           (existing, host-less Ingress)\n# demo app:   path \"/demo-app\"   (new, Prefix match)\ncurl http://<public-ip>/demo-app   # x4\n# Hello from demo-app-<pod-a>\n# Hello from demo-app-<pod-b>\n# Hello from demo-app-<pod-a>\n# Hello from demo-app-<pod-b>       -- real load balancing, verified BEFORE deleting the old LB" },
+          { label: 'Only then: delete the old paid resource and its now-orphaned NSG rules', code: "az network lb delete --resource-group <rg> --name azureops-lb\naz network public-ip delete --resource-group <rg> --name azureops-lb-pip\naz network nsg rule delete --nsg-name app-subnet-nsg --name Allow-LB-Probe-8000   # + 3 more\nsystemctl stop pyapp.service && docker rm -f waf-proxy   # both VMs, now redundant" },
+        ],
+        troubleshooting: [
+          'Cutting traffic over before verifying the replacement actually works is the classic migration mistake — every step here was ordered deploy → verify → delete, specifically to avoid a window where neither path is confirmed working.',
+          'A host-less (catch-all) Ingress and a new path-specific Ingress can coexist on the same Traefik instance via Kubernetes\' longest-prefix-match path resolution — no need for separate hostnames or IPs just to add a second service.',
+        ],
+        interview: [
+          'Why deploy and verify a replacement before deleting the resource it replaces, rather than the reverse?',
+          'How can two unrelated services share a single public IP and Ingress controller without hostname-based routing?',
+        ],
+        azureConnection:
+          "This is the concrete, dollar-and-cents payoff of every self-hosted decision made since Module 8: a real, billed Azure resource (Standard Load Balancer + its public IP) was identified, replaced with a verified-working software equivalent, and deleted — not a hypothetical cost exercise, an actual resource removed from the subscription.",
       },
     ],
   },

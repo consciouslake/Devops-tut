@@ -1094,3 +1094,37 @@ kubectl delete deployment alert-test-crash -n monitoring
 - Editing the Alertmanager Secret directly works for real, immediate verification, but a future `helm upgrade` on this release would silently overwrite it — for anything meant to persist long-term, this belongs in the chart's `alertmanager.config` Helm values instead of a live `kubectl` patch.
 
 **Cost check:** $0 marginal spend — the public Grafana Ingress reuses `azureops-vm01`'s existing public IP and Traefik (both already in place), and the webhook receiver is a single lightweight pod on the existing cluster. No Azure Front Door, Application Gateway, or Action Group was created.
+
+## Resolving the deferred Load Balancer decision — decommissioning azureops-lb — 2026-09-22
+
+**Plan item(s):** User asked directly "what about the load balancer??" — surfacing the deferred decision tracked in `PLAN.md` since Module 6 (`azureops-lb` kept running for comparison, final call deferred until a real Ingress alternative existed on Module 8's cluster).
+
+**What I did:**
+- Checked `azureops-lb`'s real state first: confirmed Standard SKU (genuine ongoing cost, not Basic/free), confirmed it was still actively serving real traffic (`curl` to its public IP `135.235.240.52` returned `HTTP 200`), and traced its backend to the Module 1/6 demo stack — `pyapp.service` (a simple `Hello from <hostname>` / `/health` Python HTTP server) sitting behind a `waf-proxy` ModSecurity container on `app-vm1`/`app-vm2`.
+- Tried to verify exact Standard LB pricing via `WebFetch` against Azure's own pricing page — it only shows placeholder rates ("$-/hour") without the region-specific calculator, so I stated the cost as "real and ongoing" without inventing a number, consistent with the same discipline used for AKS pricing in Module 9.
+- Presented the tradeoff and got explicit confirmation via `AskUserQuestion` before touching any live infrastructure — chose "decommission azureops-lb, move to Traefik Ingress."
+- Redeployed the exact same demo `app.py` (read directly off `app-vm1` first, byte-for-byte, rather than reinventing it) as a 2-replica Kubernetes Deployment + Service in the k3s cluster's `default` namespace, with real readiness/liveness probes against `/health`.
+- Added a path-based Ingress (`/demo-app`) on the same Traefik Ingress controller already serving Grafana at `/` — verified both routes coexist correctly via Kubernetes' longest-prefix-match path resolution, no separate IP or LB needed.
+- Verified real load balancing before deleting anything: repeated `curl http://20.235.48.180/demo-app` alternated between both pod hostnames (`demo-app-cbb5d6dd5-cf29g` / `-f5w67`), the same behavior the original 2-VM LB setup demonstrated.
+- Deleted `azureops-lb` and its public IP (`azureops-lb-pip`), then removed the now-orphaned NSG rules on `app-subnet-nsg` (`Allow-LB-Probe-8000`, `Allow-Internet-8000`, `Allow-LB-Probe-8080`, `Allow-Internet-8080`) that existed solely for that setup.
+- Stopped and disabled the redundant `pyapp.service` and removed the `waf-proxy` container on both `app-vm1` and `app-vm2`, since the same functionality now runs in-cluster.
+- Re-verified everything afterward, not just trusted the deletion succeeded: `az network lb list` returns empty, the old LB IP is unreachable, the demo app still load-balances correctly through the cluster, and Grafana is unaffected.
+
+**Commands used:**
+```bash
+az network lb show --resource-group azureops-copilot-rg --name azureops-lb --query "{sku:sku.name}"
+az network lb address-pool show ... --query "backendIPConfigurations[].id"
+kubectl apply -f demo-app.yaml   # ConfigMap + Deployment (2 replicas) + Service + Ingress(/demo-app)
+curl http://20.235.48.180/demo-app   # x4, confirmed alternating pod hostnames
+az network lb delete --resource-group azureops-copilot-rg --name azureops-lb
+az network public-ip delete --resource-group azureops-copilot-rg --name azureops-lb-pip
+az network nsg rule delete --nsg-name app-subnet-nsg --name Allow-LB-Probe-8000   # + 3 more
+systemctl stop pyapp.service && systemctl disable pyapp.service   # both VMs
+docker stop waf-proxy && docker rm waf-proxy                      # both VMs
+```
+
+**What broke / what I learned:**
+- Nothing broke — this was a clean, fully-verified cutover specifically because the sequence was deploy-new → verify-new → delete-old, never delete-then-hope. Every step before the `az network lb delete` call was real, independent verification (curl output, pod names alternating), not an assumption that the new setup "should" work.
+- Confirmed once more that stating a specific unverified Azure price is worth resisting even under time pressure — `WebFetch` against the real pricing page came back with placeholders, so the write-up says "real, ongoing cost" rather than a guessed dollar figure.
+
+**Cost check:** Net cost *reduction* — a genuinely billed Standard Load Balancer + its public IP were deleted entirely. The replacement (2 extra small pods + one more Ingress path on already-running Traefik) costs $0 marginal, since it reuses compute and networking already paid for since Module 8.

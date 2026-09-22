@@ -1731,3 +1731,58 @@ curl -s http://localhost:5173/assets/<bundle>.js | grep -oE "System Architecture
 - Extending an existing, working data schema with one new optional field (`diagramId?: string`) was less invasive and more consistent with the rest of the app than building a separate, one-off page for this module — the existing chapter navigation, AI Mentor context-awareness, and text-content rendering all kept working unchanged for Module 14 without any special-casing.
 
 **Cost check:** $0 — pure frontend code, zero new npm dependencies, no new Azure resource. The diagrams describe existing infrastructure; nothing new was provisioned to build this module.
+
+## Real kubectl/SSH access setup, and deploying Headlamp (Kubernetes Dashboard's real successor) — 2026-09-22
+
+**Plan item(s):** User wanted direct `kubectl` access from their own terminal, then asked how to see the Kubernetes Dashboard.
+
+**What I did — local kubectl access:**
+- Diagnosed a stale `az` PATH fix from a prior session that had silently stopped working — gave the user the real fix (append Azure CLI's `wbin` dir to `~/.bashrc`, source it from `~/.bash_profile` since Git Bash reads that for login shells).
+- Set up an SSH tunnel (`ssh -L 6443:127.0.0.1:6443 azureadmin@20.235.48.180 -N`) plus a real kubeconfig fetched via `ssh ... "sudo cat /etc/rancher/k3s/k3s.yaml"` — confirmed the actual VM's SSH auth (key-based, `azureadmin` user) before giving commands, rather than guessing.
+- Hit real friction: the user's first attempts failed with `kubectl` falling back to its ancient `localhost:8080` default — diagnosed as the kubeconfig file simply not existing yet (confirmed via `cat`, which showed "No such file or directory"), not a tunnel problem. After multiple rounds of back-and-forth diagnosis with limited visibility into the user's actual terminal state, honestly acknowledged the real limitation (I have no way to execute anything on their local machine — only `az vm run-command` against the Azure VMs) and offered to just run everything for them instead, which they accepted.
+
+**What I did — the Kubernetes Dashboard question, and a real, dated finding:**
+- User asked how to see "the dashboard" — checked whether the official Kubernetes Dashboard was actually installed (`kubectl get ns/pods | grep dashboard`) rather than assuming; confirmed it wasn't.
+- Before deploying anything, checked whether the Kubernetes Dashboard project itself was still a reasonable choice — found a real, significant fact: **the project is archived and no longer maintained**, and the Kubernetes maintainers themselves now point to **Headlamp** (moved under Kubernetes SIG-UI, actively maintained) as the replacement. Verified this directly against the real GitHub repo and Headlamp's own repo before recommending anything, rather than trusting a first-pass summary (which initially gave a dead Helm repo URL — caught by checking the URL myself with `curl`, then finding the real one).
+- Presented this finding to the user with the real tradeoff rather than silently substituting Headlamp; they chose Headlamp.
+
+**Deploying Headlamp for real:**
+- Installed via Helm (`helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/`, verified live via `curl` first) into its own `headlamp` namespace.
+- Checked what RBAC the chart granted by default rather than assuming — found it binds a `headlamp` ServiceAccount to `cluster-admin` via a real `ClusterRoleBinding`. Judged this acceptable specifically because the user already has this exact access level via their own kubeconfig; the UI doesn't grant anything new, it's a view onto access they already have.
+- Deliberately did NOT expose it publicly by default — access was planned via the user's own kubectl tunnel first, consistent with the standing practice (Module 11) of keeping cluster-admin-capable tooling off the internet.
+
+**Real regression when the local tunnel setup was abandoned, and public exposure was chosen instead:**
+- Once local `kubectl` access was dropped (see above), the only way to actually *see* Headlamp was public exposure or continued tunnel debugging. Presented the real tradeoff explicitly (temporary public exposure, vs. more tunnel debugging, vs. permanent public exposure) — user chose temporary: expose it, look at it, then have it torn down.
+- Checked Headlamp's own docs for subpath/reverse-proxy support before assuming a plain path-based Ingress would work cleanly (learned this lesson the hard way with Grafana in Module 10/12) — found the real flag: `-base-url=/headlamp`, plus matching health-probe paths.
+- Patched the Deployment's `args` and `livenessProbe` path via `kubectl patch` — the rollout got stuck (`0/1 Running`, not Ready). Diagnosed by checking logs first (looked healthy, no errors) before checking the *other* probe — found `readinessProbe` still pointed at the old `/` path, a real oversight (patched liveness, forgot readiness). Fixed and the rollout succeeded.
+- Added a temporary public route. **First attempt was silently wrong**: `curl https://devopspk.online/headlamp/` returned the *main app's* HTML, not Headlamp's — caught immediately by checking the actual page title rather than just the HTTP status code (which was a misleading `200` either way). Root-caused via Traefik's own logs, not guessing: a plain `Ingress` object with no `host`/`tls` fields only gets a port-80 router, not 443, so the HTTPS request fell through to the domain's existing `IngressRoute` instead.
+- **Second attempt** moved the route into a proper `IngressRoute` referencing the Service cross-namespace (`azureops-copilot` → `headlamp`) — failed again, this time with a real, explicit Traefik error in the logs: `"service headlamp/headlamp not in the parent resource namespace azureops-copilot"` — Traefik blocks cross-namespace service references by default (a real, deliberate security guard, not a bug). Fixed by moving the `IngressRoute` itself into the `headlamp` namespace instead, referencing its own local Service, and reusing the already-issued `devopspk.online` certificate (no `tls.domains` block, avoiding a repeat of the earlier ACME-race incident from Module 12) — just enabling TLS termination against the existing cert.
+- **Still wrong a third time**, even with no errors in the logs. Root-caused by directly verifying Traefik's own documented priority semantics (checked via search rather than assumed) — "bigger number wins," and when `priority` isn't set, Traefik defaults to the **rule string's length** as its priority. My explicit `priority: 10` was almost certainly losing to the plain catch-all Ingress's auto-computed default priority (its own rule string being longer than "10" as a plain integer comparison). Fixed by setting `priority: 1000` — unambiguously higher than any plausible auto-computed value — and it worked immediately, confirmed by checking the real page title (`<title>Headlamp`), not just a status code.
+
+**Commands used (representative, not exhaustive — this was a long, iterative debugging session):**
+```bash
+helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
+helm install headlamp headlamp/headlamp --namespace headlamp --create-namespace
+kubectl get clusterrolebinding | grep headlamp   # confirmed cluster-admin binding
+
+kubectl patch deployment headlamp -n headlamp --type=json -p='[...base-url arg, liveness path...]'
+# rollout stuck 0/1 -- found readinessProbe still on old path
+kubectl patch deployment headlamp -n headlamp --type=json -p='[...readiness path fix...]'
+
+# 3 real, sequential routing bugs, each independently diagnosed and fixed:
+# 1. plain Ingress -> only port 80, not 443 -> fell through to wrong IngressRoute
+# 2. cross-namespace Service ref -> Traefik logs: "not in the parent resource namespace"
+# 3. priority: 10 too low -> lost to another router's auto-computed default -> priority: 1000
+
+curl --resolve devopspk.online:443:20.235.48.180 https://devopspk.online/headlamp/ \
+  | grep -oE '<title>[^<]*'   # the real verification each time -- page TITLE, not just status code
+```
+
+**What broke / what I learned:**
+- I cannot execute anything on the user's own machine — every command run through me goes through `az vm run-command` against Azure VMs, nothing more. Should have stated this limitation plainly the first time local kubectl setup started failing, rather than continuing to guess at remote diagnostics for their local terminal across several rounds.
+- A `200` HTTP status code is not proof the right content was served — the first Headlamp routing bug returned a perfectly valid `200`, just from the wrong backend. Checking the actual page `<title>` (or equivalent real content marker) is what actually caught it, both times it was still wrong.
+- Traefik's default (unset) priority is based on rule STRING LENGTH, not some small implicit baseline — an explicitly-set low integer priority (`10`) can lose to another router's auto-computed default if that router's rule happens to be a longer string. When precedence absolutely must win, set a priority high enough to be unambiguous rather than a small, "reasonable-looking" number.
+- Cross-namespace Service references in a Traefik `IngressRoute` are blocked by default, with a clear, real error message once you check the logs for it — worth checking Traefik's own logs immediately after any Ingress/IngressRoute change that doesn't behave as expected, rather than only checking `kubectl get` status (which showed the object as successfully created, with no visible fault, both times something was actually wrong).
+- The Kubernetes Dashboard project being archived is a real, dated fact worth knowing independent of this specific task — worth remembering for any future "let's use the Kubernetes Dashboard" suggestion in this or any project.
+
+**Cost check:** $0 — Headlamp is one more small pod on the existing cluster, reusing the same public IP and Traefik instance already paying for nothing extra. The temporary public route will be removed once the user has finished looking at the UI, per the explicit plan agreed before exposing it.

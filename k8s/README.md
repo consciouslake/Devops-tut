@@ -89,3 +89,19 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
   actually be built — this subscription's Free Trial tier is explicitly
   blocked from creating any Front Door resource, confirmed via a real,
   failed `az afd profile create` call, not a guess.
+- **Cluster UI — Headlamp, not the Kubernetes Dashboard**: the official
+  Kubernetes Dashboard project is archived/unmaintained; Kubernetes itself
+  now points to **Headlamp** (Kubernetes SIG-UI) instead. Installed via
+  Helm (`headlamp-values.yaml` captures the real applied config —
+  `-base-url=/headlamp` plus matching probe paths, both needed since the
+  chart's defaults assume root-path serving). Its ServiceAccount is bound
+  to `cluster-admin` by the chart's own default, judged acceptable here
+  since it grants nothing beyond what the account owner already has via
+  their own kubeconfig. **`headlamp-ingress-temp.yaml` is a deliberately
+  temporary public route** (`/headlamp` on `devopspk.online`, `priority:
+  1000` — needed to unambiguously beat the catch-all Ingress's own
+  Traefik-computed default priority, based on its rule string's length)
+  added only so the user could view it in a browser without a working
+  local `kubectl` tunnel. **Remove this Ingress once no longer needed** —
+  `kubectl delete -f headlamp-ingress-temp.yaml` — a cluster-admin login
+  screen shouldn't sit on the public internet indefinitely.

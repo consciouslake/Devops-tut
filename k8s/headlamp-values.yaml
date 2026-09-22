@@ -1,0 +1,19 @@
+# Real values used for this deployment, reflecting the actual applied
+# config (originally done via two `kubectl patch` calls; captured here
+# so `helm install/upgrade` alone reproduces it without manual patching).
+args:
+  - -in-cluster
+  - -in-cluster-context-name=main
+  - -plugins-dir=/headlamp/plugins
+  - -session-ttl=86400
+  - -base-url=/headlamp
+
+livenessProbe:
+  httpGet:
+    path: /headlamp/
+    port: http
+
+readinessProbe:
+  httpGet:
+    path: /headlamp/
+    port: http

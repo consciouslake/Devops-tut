@@ -54,6 +54,11 @@ spec:
         ports:
         - containerPort: 3200
         - containerPort: 4317
+        resources:
+          # observed real usage sits around 579Mi even near-idle (trace
+          # buffering/compaction) -- request reflects that, not a guessed low number
+          requests: { cpu: 50m, memory: 512Mi }
+          limits: { cpu: 500m, memory: 1Gi }
         volumeMounts:
         - name: config
           mountPath: /etc/tempo.yaml

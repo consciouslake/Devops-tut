@@ -29,6 +29,9 @@ spec:
           value: "true"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://tempo:4317"
+        resources:
+          requests: { cpu: 50m, memory: 128Mi }
+          limits: { cpu: 500m, memory: 512Mi }
         readinessProbe:
           httpGet:
             path: /health

@@ -305,6 +305,34 @@ a {
   align-items: center;
   gap: 10px;
 }
+.mentor-header-text {
+  flex: 1;
+  min-width: 0;
+}
+.mentor-mode-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 2px;
+  flex: none;
+}
+.mentor-mode-btn {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.mentor-mode-btn.active {
+  background: var(--accent);
+  color: var(--bg);
+}
 .mentor-status-dot {
   width: 8px;
   height: 8px;
@@ -371,6 +399,10 @@ a {
 .mentor-input:focus {
   outline: 1px solid var(--accent);
 }
+.mentor-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .mentor-send {
   font-family: inherit;
   font-size: 13px;
@@ -381,6 +413,10 @@ a {
   border-radius: 20px;
   padding: 10px 16px;
   cursor: pointer;
+}
+.mentor-send:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .mentor-disclaimer {
   font-size: 10.5px;

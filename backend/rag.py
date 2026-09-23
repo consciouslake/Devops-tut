@@ -25,6 +25,9 @@ genai.configure(api_key=settings.gemini_api_key)
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM = 768
 CHAT_MODEL = "gemini-3.6-flash"
+# Caps real, usage-billed Gemini API cost per reply -- generous enough for a
+# thorough study-assistant answer, not left unbounded.
+MAX_OUTPUT_TOKENS = 1024
 
 _qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
 
@@ -92,8 +95,31 @@ def retrieve(query: str, top_k: int = 5) -> list[dict]:
         return [{"text": h.payload["text"], "source": h.payload["source"], "score": h.score} for h in hits]
 
 
-def generate_answer(query: str, context_chunks: list[dict]):
-    """Yields response text chunks (Gemini streaming)."""
+async def generate_plain_answer(query: str):
+    """Yields response text chunks (Gemini streaming) — no Qdrant retrieval, plain Gemini chat.
+
+    Uses generate_content_async, not the sync client: the sync call blocks the
+    whole asyncio event loop for its entire duration (seconds, sometimes much
+    longer), freezing every other concurrent /chat connection on this single
+    Uvicorn worker until it returns.
+    """
+    with tracer.start_as_current_span("gemini_generate_plain") as span:
+        span.set_attribute("gemini.model", CHAT_MODEL)
+        prompt = (
+            "You are AzureOps Copilot's AI Mentor, a helpful Azure/DevOps study assistant.\n\n"
+            f"Question: {query}"
+        )
+        model = genai.GenerativeModel(CHAT_MODEL)
+        response = await model.generate_content_async(
+            prompt, stream=True, generation_config={"max_output_tokens": MAX_OUTPUT_TOKENS}
+        )
+        async for chunk in response:
+            if chunk.text:
+                yield chunk.text
+
+
+async def generate_answer(query: str, context_chunks: list[dict]):
+    """Yields response text chunks (Gemini streaming). See generate_plain_answer for why async."""
     with tracer.start_as_current_span("gemini_generate") as span:
         span.set_attribute("gemini.model", CHAT_MODEL)
         span.set_attribute("gemini.context_chunks", len(context_chunks))
@@ -104,6 +130,9 @@ def generate_answer(query: str, context_chunks: list[dict]):
             f"Context:\n{context}\n\nQuestion: {query}"
         )
         model = genai.GenerativeModel(CHAT_MODEL)
-        for chunk in model.generate_content(prompt, stream=True):
+        response = await model.generate_content_async(
+            prompt, stream=True, generation_config={"max_output_tokens": MAX_OUTPUT_TOKENS}
+        )
+        async for chunk in response:
             if chunk.text:
                 yield chunk.text

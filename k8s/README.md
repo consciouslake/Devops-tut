@@ -109,6 +109,8 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
   token collided, confirmed with `curl` sending each in isolation (a
   Bearer-only request got rejected by Traefik with a `401` asking for Basic,
   proving the two mechanisms are fundamentally incompatible on the same
-  route). Mint a fresh token any time with:
-  `ssh azureadmin@20.235.48.180 "sudo kubectl -n headlamp create token
-  headlamp --duration=1h"`.
+  route). Mint a fresh token any time with (run `ssh azureadmin@20.235.48.180`
+  alone first if this is a new machine, to accept the host key):
+  ```bash
+  ssh azureadmin@20.235.48.180 "sudo kubectl -n headlamp create token headlamp --duration=1h"
+  ```

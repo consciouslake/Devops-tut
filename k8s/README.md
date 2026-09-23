@@ -16,6 +16,56 @@ kubectl apply -f traefik-tls-config.yaml         # HelmChartConfig, cluster-wide
 kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online + www, one SAN cert via Let's Encrypt
 ```
 
+## Cluster & workload commands
+
+Quick reference for this specific cluster — every command here was actually
+run against it. For the full teaching context (why each one, what broke
+first), see Module 8 "Kubernetes Fundamentals" in the app's own curriculum
+browser, or `LEARNING_LOG.md` for the narrative version.
+
+**Bootstrap (already done — for reference/rebuild only):**
+```bash
+# first control-plane node
+curl -sfL https://get.k3s.io | sh -s - server --cluster-init --node-ip=10.10.1.4 --advertise-address=10.10.1.4   # app-vm1
+
+# additional nodes join the same cluster via --server + the first node's token
+curl -sfL https://get.k3s.io | K3S_TOKEN='<token>' sh -s - server --server https://10.10.1.4:6443 --node-ip=10.10.1.5 --advertise-address=10.10.1.5   # app-vm2
+curl -sfL https://get.k3s.io | K3S_TOKEN='<token>' sh -s - server --server https://10.10.1.4:6443 --node-ip=10.0.0.4 --advertise-address=10.0.0.4     # azureops-vm01
+```
+
+**Cluster & node inspection:**
+```bash
+kubectl get nodes -o wide                    # ROLES shows control-plane,etcd on all 3 -- real HA, not managed
+kubectl get pods -A                          # every pod, every namespace
+kubectl get pods -n azureops-copilot -o wide # this app's pods + which node each landed on
+kubectl get svc -A                           # every Service, cluster-wide
+kubectl get ingress,ingressroute -A          # every HTTP route into the cluster
+```
+
+**Everyday debugging (narrowest, most specific check first):**
+```bash
+kubectl describe pod <name> -n <namespace>              # events -- almost always the fastest answer
+kubectl logs <name> -n <namespace>                      # current container output
+kubectl logs <name> -n <namespace> --previous            # last crashed container's output
+kubectl logs -n <namespace> -l app=<label> --tail 50     # by label, across replicas
+kubectl get events -n <namespace> --sort-by=.lastTimestamp
+kubectl auth can-i <verb> <resource> --as=<subject> -n <namespace>   # permission questions
+```
+
+**Scaling & rollouts:**
+```bash
+kubectl scale deployment <name> -n <namespace> --replicas=N
+kubectl rollout status deployment <name> -n <namespace>
+kubectl rollout restart deployment <name> -n <namespace>   # forces a fresh pull + restart, no manifest change needed
+kubectl rollout undo deployment <name> -n <namespace>      # revert to the previous ReplicaSet
+```
+
+**Secrets/config (imperative, not committed to git — same pattern as Headlamp's own secrets below):**
+```bash
+kubectl create secret generic <name> -n <namespace> --from-literal=KEY=value
+kubectl get secret <name> -n <namespace> -o jsonpath='{.data.KEY}' | base64 -d   # decode to verify -- base64 is encoding, not encryption
+```
+
 ## Notes
 
 - **Images**: `ghcr.io/consciouslake/azureops-backend:latest` and
@@ -50,6 +100,18 @@ kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online
 - **Rate limiting**: `/ingest` and `/chat` are both limited in-app
   (`backend/rate_limit.py`) to protect the real, usage-billed Gemini API
   from being run up now that the app is public.
+- **Resource `requests`/`limits`**: added to every container in
+  `backend.yaml`, `frontend.yaml`, `qdrant.yaml`, `tempo.yaml`, `waf.yaml` —
+  previously unset entirely, a real production gap (no scheduler placement
+  guidance, no protection against one container starving a node). Sized off
+  real `kubectl top pods` output, not guessed: `tempo` in particular sits
+  around 512Mi even near-idle (trace buffering/compaction), so its request
+  reflects that rather than a low, more "typical-looking" number that would
+  under-represent its actual steady-state footprint. Rolled out one
+  Deployment at a time, verifying `kubectl rollout status` and the live
+  site (`/`, `/health`, `/grafana/login`) after each before moving to the
+  next — no restarts, no OOMKills, all real usage comfortably inside the
+  new limits.
 - **WAF**: `waf.yaml` deploys `owasp/modsecurity-crs:nginx` (Module 6's
   self-hosted WAF pattern, rebuilt as a real Kubernetes workload) in front of
   `frontend`. The Ingress's `/` path now targets the `waf-proxy` Service

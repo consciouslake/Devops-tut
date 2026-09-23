@@ -16,6 +16,9 @@ spec:
         image: ghcr.io/consciouslake/azureops-frontend:latest
         ports:
         - containerPort: 80
+        resources:
+          requests: { cpu: 10m, memory: 32Mi }
+          limits: { cpu: 200m, memory: 128Mi }
         readinessProbe:
           httpGet:
             path: /

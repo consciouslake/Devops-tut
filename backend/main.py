@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
@@ -39,17 +40,28 @@ async def chat(ws: WebSocket):
     client_ip = client_ip_from_websocket(ws)
     try:
         while True:
-            query = await ws.receive_text()
+            raw = await ws.receive_text()
+            try:
+                payload = json.loads(raw)
+                query = payload.get("query", "")
+                mode = payload.get("mode", "rag")
+            except (json.JSONDecodeError, AttributeError):
+                query, mode = raw, "rag"
             if not chat_limiter.allow(client_ip):
                 await ws.send_text("[error] rate limit reached, please wait a few minutes and try again")
                 await ws.send_text("[[END]]")
                 continue
             with tracer.start_as_current_span("chat_query") as span:
                 span.set_attribute("chat.query_length", len(query))
+                span.set_attribute("chat.mode", mode)
                 try:
-                    context_chunks = rag.retrieve(query)
-                    for token in rag.generate_answer(query, context_chunks):
-                        await ws.send_text(token)
+                    if mode == "ai":
+                        async for token in rag.generate_plain_answer(query):
+                            await ws.send_text(token)
+                    else:
+                        context_chunks = rag.retrieve(query)
+                        async for token in rag.generate_answer(query, context_chunks):
+                            await ws.send_text(token)
                 except Exception:
                     logger.exception("chat generation failed")
                     span.set_attribute("chat.error", True)

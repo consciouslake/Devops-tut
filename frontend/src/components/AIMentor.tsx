@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 type Message = { role: 'user' | 'assistant'; text: string }
+type Mode = 'rag' | 'ai'
 
 export function AIMentor({ subtitle }: { subtitle: string }) {
   const [messages, setMessages] = useState<Message[]>([
@@ -8,8 +9,10 @@ export function AIMentor({ subtitle }: { subtitle: string }) {
   ])
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
+  const [mode, setMode] = useState<Mode>('rag')
 
   function send() {
+    if (isTyping) return
     const query = input.trim()
     if (!query) return
     setMessages((m) => [...m, { role: 'user', text: query }, { role: 'assistant', text: '' }])
@@ -18,7 +21,7 @@ export function AIMentor({ subtitle }: { subtitle: string }) {
 
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(`${proto}://${window.location.host}/chat`)
-    ws.onopen = () => ws.send(query)
+    ws.onopen = () => ws.send(JSON.stringify({ query, mode }))
     ws.onmessage = (evt) => {
       if (evt.data === '[[END]]') {
         setIsTyping(false)
@@ -32,15 +35,32 @@ export function AIMentor({ subtitle }: { subtitle: string }) {
       })
     }
     ws.onerror = () => setIsTyping(false)
+    ws.onclose = () => setIsTyping(false)
   }
 
   return (
     <div className="mentor">
       <div className="mentor-header">
         <div className="mentor-status-dot" />
-        <div>
+        <div className="mentor-header-text">
           <div className="mentor-title">AI Mentor</div>
           <div className="mentor-subtitle">{subtitle}</div>
+        </div>
+        <div className="mentor-mode-toggle" role="group" aria-label="Chat mode">
+          <button
+            className={`mentor-mode-btn ${mode === 'rag' ? 'active' : ''}`}
+            onClick={() => setMode('rag')}
+            title="Answers grounded in ingested documents (Qdrant retrieval)"
+          >
+            RAG
+          </button>
+          <button
+            className={`mentor-mode-btn ${mode === 'ai' ? 'active' : ''}`}
+            onClick={() => setMode('ai')}
+            title="Plain Gemini chat, no document retrieval"
+          >
+            AI
+          </button>
         </div>
       </div>
       <div className="mentor-messages">
@@ -59,12 +79,18 @@ export function AIMentor({ subtitle }: { subtitle: string }) {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && send()}
             placeholder="Ask me anything about DevOps…"
+            disabled={isTyping}
           />
-          <button className="mentor-send" onClick={send}>
+          <button className="mentor-send" onClick={send} disabled={isTyping}>
             Send
           </button>
         </div>
-        <div className="mentor-disclaimer">AI Mentor can make mistakes — verify commands before running in production.</div>
+        <div className="mentor-disclaimer">
+          {mode === 'rag'
+            ? 'RAG mode: answers grounded in ingested docs. '
+            : 'AI mode: plain Gemini chat, no document retrieval. '}
+          AI Mentor can make mistakes — verify commands before running in production.
+        </div>
       </div>
     </div>
   )

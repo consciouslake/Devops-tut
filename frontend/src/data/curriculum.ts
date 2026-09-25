@@ -2020,7 +2020,7 @@ export const modules: Module[] = [
         ],
         troubleshooting: [
           'Assuming the account that created a Key Vault automatically has access to its secrets → true for the legacy access-policy model, false for RBAC authorization mode; a separate role assignment is required regardless of who created the vault.',
-          'Confusing a vault-level resource permission (e.g., Contributor on the Key Vault resource itself) with a data-plane permission (reading/writing secrets inside it) → these are genuinely separate RBAC scopes in the modern model; a Key Vault \"Contributor\" on the resource can delete the vault but still can\'t read a secret without an explicit data-plane role like `Key Vault Secrets User`.',
+          'Confusing a vault-level resource permission (e.g., Contributor on the Key Vault resource itself) with a data-plane permission (reading/writing secrets inside it) → these are genuinely separate RBAC scopes in the modern model; a Key Vault "Contributor" on the resource can delete the vault but still can\'t read a secret without an explicit data-plane role like `Key Vault Secrets User`.',
         ],
         interview: [
           'What\'s the practical difference between Key Vault\'s legacy access-policy model and its RBAC authorization mode?',

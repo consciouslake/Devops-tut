@@ -126,7 +126,17 @@ jobs:
       # CRITICAL+HIGH is a fair, immediately-actionable bar. backend/.trivyignore
       # documents the small number of exceptions (unfixable transitive pins,
       # non-runtime build tooling) with reasons, reviewed periodically.
-      - name: Scan backend image (Trivy)
+      #
+      # Gating and SARIF reporting are deliberately TWO separate trivy-action
+      # invocations, not one step with format: sarif. A single step combining
+      # `format: sarif` with `severity`/`ignore-unfixed`/`exit-code` silently
+      # drops all of those filters -- trivy-action's SARIF path always scans
+      # "with all severities" for Security-tab completeness, so it fails on
+      # anything Trivy has ever flagged (LOW/MEDIUM included), not just the
+      # CRITICAL+HIGH bar this project actually gates on. Confirmed via a
+      # real failed run: the logged command was bare `trivy image <ref>`,
+      # none of the severity/ignorefile/exit-code inputs were even passed.
+      - name: Scan backend image (Trivy) -- gate
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: azureops-backend:${{ github.sha }}
@@ -134,12 +144,22 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           trivyignores: backend/.trivyignore
+
+      # exit-code: '0' -- this invocation never fails the build; it exists
+      # purely to populate the Security tab. if: always() so it still runs
+      # (and the failure is still visible there) even if the gate above
+      # just failed the job.
+      - name: Scan backend image (Trivy) -- report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: azureops-backend:${{ github.sha }}
+          ignore-unfixed: true
+          trivyignores: backend/.trivyignore
+          exit-code: '0'
           format: sarif
           output: trivy-results-backend.sarif
 
-      # Findings persist to the repo's Security tab even on a failing
-      # (CVE-gated) run -- `if: always()` -- instead of only living in
-      # ephemeral job logs.
       - name: Upload backend Trivy report
         if: always()
         uses: github/codeql-action/upload-sarif@v3
@@ -154,13 +174,24 @@ jobs:
       # CRITICAL only here; HIGH findings get cleared by periodically
       # bumping the base image tag (already done once this session:
       # nginx:1.27-alpine -> 1.29-alpine), not by blocking every commit.
-      - name: Scan frontend image (Trivy)
+      # if: always() -- otherwise a failed (CVE-gated) backend scan above
+      # skips this step entirely by GitHub Actions' default behavior.
+      - name: Scan frontend image (Trivy) -- gate
+        if: always()
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: azureops-frontend:${{ github.sha }}
           severity: CRITICAL
           exit-code: '1'
           ignore-unfixed: true
+
+      - name: Scan frontend image (Trivy) -- report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: azureops-frontend:${{ github.sha }}
+          ignore-unfixed: true
+          exit-code: '0'
           format: sarif
           output: trivy-results-frontend.sarif
 

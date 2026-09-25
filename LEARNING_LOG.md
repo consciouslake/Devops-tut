@@ -1814,3 +1814,47 @@ Test 3 is what proved it: Headlamp's frontend JS *only* sends `Authorization: Be
 Reverted to token-only: removed the `Middleware` and its `middlewares:` reference from `headlamp-ingress.yaml`, deleted the now-unused `headlamp-basic-auth` and `headlamp-sa-token` Secrets from the cluster. Real alternatives that would avoid this collision, if a password-style gate is wanted again later: an IP allowlist (no header involved at all, but breaks on IP rotation), or a proper cookie-based auth proxy (oauth2-proxy/Authelia) in front, since cookies and the `Authorization` header are independent channels.
 
 **Lesson:** any reverse-proxy auth layer that reads or writes the `Authorization` header will collide with an app that also uses that header for its own token auth — check what header an app's own auth flow uses *before* picking a proxy-level auth mechanism, not after wiring it up.
+
+## Staging tier, automated rollback, and a real Trivy gating bug — 2026-09-25
+
+**Plan item(s):** Reviewed the Module 7 pipeline against a standard CI/CD best-practices checklist (started from "how do we run a production-grade CI/CD pipeline without paid tools"). Found no staging tier, no automated rollback, and several hygiene gaps (no caching, no SBOM, no least-privilege permissions on every job).
+
+**What I did — staging tier:**
+- Added `k8s/staging/` (namespace, Qdrant, backend, frontend — deliberately no WAF, that's a production-hardening concern) as a second Kubernetes namespace, `azureops-copilot-staging`, on the same 3-node cluster. $0 marginal cost — no new VM, matching this whole project's pattern of reusing already-paid-for compute (WAF, monitoring, Headlamp all did the same).
+- `k8s/ingress-tls-domain.yaml` got a second `routes:` entry (`Host(staging.devopspk.online)` → the staging namespace's `frontend` Service) and `staging.devopspk.online` added to the SAME `tls.domains[0].sans` list, rather than a second IngressRoute — Module 12 already hit a real ACME race from two concurrent cert requests through the same resolver; one IngressRoute, three SANs avoids repeating it.
+- New `deploy-staging` job in `ci.yml`: `az vm run-command` curls the staging manifests straight from `raw.githubusercontent.com` at the exact deploying commit SHA (no persistent git clone on the VM to keep in sync), `kubectl apply`s them, `kubectl set image`s both Deployments to that SHA, then a real smoke test (`curl -sf` against `staging.devopspk.online/` and `/health`).
+- `deploy-production` renamed and given `needs: deploy-staging` — production's approval gate literally cannot open until the same commit has already deployed cleanly to staging and passed its smoke test.
+- **Manual prerequisites** (outside what I can do from a coding session): a `staging` A record in Azure DNS (same public IP as the root domain — user added it, verified with `nslookup ... 8.8.8.8`), a `staging` GitHub Environment with no required reviewers (user created it), and a one-time manual `kubectl apply` of the new namespace/PVC objects on the VM (CI only ever updates images, never creates namespaces).
+
+**Real bug hit — OIDC federation, again:** first `deploy-staging` run failed immediately at `azure/login` with `AADSTS700213`, the exact error class Module 7 already hit twice. `environment: staging` produces subject `repo:consciouslake@.../Devops-tut@...:environment:staging`, and the App Registration only had Federated Credentials for `ref:refs/heads/main` and `environment:production`. Confirmed via `az ad app federated-credential list` before creating a third:
+```bash
+az ad app federated-credential create --id b2fe2ee7-32dc-4a8d-a59a-d74251892599 --parameters '{
+  "name": "github-actions-staging-environment",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:consciouslake@166535976/Devops-tut@1378577773:environment:staging",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+```
+This credential-creation call was correctly declined when attempted autonomously (identity/trust changes are exactly the kind of action that stays a human decision in this project, same pattern as every RBAC/role-assignment moment before it) — run by the user directly, then `deploy-staging` re-run and passed.
+
+**What I did — automated rollback:** `deploy-production`'s existing health check (`curl -sf` against `/` and `/health`) now has a paired step, `if: failure()`, that runs `kubectl rollout undo` for both Deployments, re-verifies health against the reverted release, and exits non-zero regardless (a caught bad deploy stays visible, but production itself is left on the last-good image).
+
+**Real bug found and fixed — a security gate that silently stopped gating:** added SARIF output (`format: sarif`, `output: ...`) to the existing Trivy scan step so findings persist to the Security tab instead of only living in job logs. The very next real push failed — not on a genuinely new CVE, on something else. Local reproduction was the key move: rebuilt the exact backend image with `docker build --no-cache` (ruling out a stale local layer), ran the raw `trivy` binary with the exact same `--severity CRITICAL,HIGH --ignore-unfixed --ignorefile ... --exit-code 1` flags → clean, exit 0. So the image was fine; the bug was in the pipeline. Got the real failed run's log from the user and found the tell:
+```
+Running Trivy with options: trivy image azureops-backend:b3b0381...
+```
+No `--severity`, no `--ignore-unfixed`, no `--exit-code`, no `--ignorefile` — none of the configured inputs were actually passed. `trivy-action` has an undocumented-in-practice behavior: `format: sarif` switches it into a "scan with all severities, for Security-tab completeness" path that silently drops every filtering input. Fixed by splitting each image's scan into two separate `trivy-action` invocations — an unchanged severity-gated "gate" (no `format:` at all, can fail the build) and a permissive "report" (`exit-code: '0'`, `if: always()`, can never fail the build, exists only to populate the Security tab).
+
+**What I did — optimization pass:**
+- Real lint jobs: `ruff` for the backend (new explicit `backend/ruff.toml` — no config existed, so `ruff check` was silently relying on whatever rule set shipped as its current default; pinned `select = ["E", "F"]` and `line-length = 110` to match the codebase's actual longest real line rather than reformatting working code to Black's 88-char default), ESLint for the frontend (new `frontend/eslint.config.js`, flat config, `typescript-eslint` + `eslint-plugin-react-hooks`). Found and fixed three real findings: one unused `GroupBox` import in `MonitoringComponentDiagram.tsx`, two unnecessary regex escapes in `curriculum.ts`.
+- `docker-build-scan` restructured into a `strategy.matrix` over `[backend, frontend]` — the two images now build and scan as two parallel jobs instead of sequentially inside one.
+- Trivy's own vulnerability DB (~117MB) cached with a daily-rotating key (`actions/cache`, keyed on the current date) — it was being re-downloaded on every one of the 4 scan steps (gate + report, × 2 images) on every single run before this.
+- An SPDX SBOM (`anchore/sbom-action`) generated per image, uploaded as a real `actions/upload-artifact`.
+- `on.push.paths-ignore` / `on.pull_request.paths-ignore` added for `*.md`, `LEARNING_LOG.md`, `PLAN.md` — docs-only commits no longer trigger the full pipeline.
+
+**What broke / what I learned:**
+- The federated-credential mismatch is now a pattern, not a one-off: any NEW distinct GitHub Actions execution context (a new environment, in this case) needs its own Federated Credential, because OIDC subject claims are exact-match by design — that's the security property working as intended, not a bug to route around.
+- A CI step's logged/reported configuration can silently diverge from its YAML `with:` block through an action's own internal logic (trivy-action's SARIF-mode behavior here) — when a gate starts failing for no apparent reason, check what the tool itself printed it actually ran, not just what was configured.
+- Reproducing a CI failure locally, with the exact same flags, before touching the pipeline YAML, is what told the difference between "real new CVE" and "pipeline bug" here — editing YAML until the build goes green without that step would have risked papering over an actual vulnerability instead of fixing the real cause.
+
+**Cost check:** $0 — staging is a namespace on the existing cluster, no new VM, no new paid service. GitHub Actions minutes usage went up slightly (more jobs run in parallel now, and staging adds a deploy per push to `main`), still well within the free tier for this project's traffic.

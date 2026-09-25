@@ -13,9 +13,21 @@ spec:
     services:
     - name: waf-proxy
       port: 80
+  # Staging shares this same IngressRoute/cert request rather than getting
+  # its own object -- Module 12 hit a real ACME race when two separate
+  # Ingress objects requested certs concurrently through the same resolver
+  # (see k8s/README.md). One IngressRoute, one cert, three SANs avoids it.
+  - match: Host(`staging.devopspk.online`)
+    kind: Rule
+    priority: 1
+    services:
+    - name: frontend
+      namespace: azureops-copilot-staging
+      port: 80
   tls:
     certResolver: letsencrypt
     domains:
     - main: devopspk.online
       sans:
       - www.devopspk.online
+      - staging.devopspk.online

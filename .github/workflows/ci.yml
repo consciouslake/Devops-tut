@@ -6,15 +6,31 @@
 # Module 12 went live, once there was an actual production target to deploy
 # to and it became clear a merge to main never got in front of a real user
 # without a manual `kubectl rollout restart` first.
+#
+# Staging tier + hardening pass added after reviewing the pipeline against a
+# standard CI/CD checklist: every merge to main now deploys to a real
+# `azureops-copilot-staging` namespace on the same cluster and gets
+# smoke-tested BEFORE the production approval gate even becomes available
+# (deploy-production `needs: deploy-staging`), deploys are pinned to the
+# exact scanned commit SHA (not the mutable `:latest` tag), and a failed
+# production health check now triggers an automatic `kubectl rollout undo`
+# instead of just going red while the broken image stays live.
 name: CI
 
 on:
   push:
   pull_request:
 
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,6 +41,9 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: backend
@@ -33,11 +52,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
       - run: pytest
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: frontend
@@ -46,15 +70,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
       - run: npm install
       - run: npm run build
 
   docker-build-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [backend, frontend]
     permissions:
       contents: read
       packages: write
+      security-events: write
     env:
       REGISTRY: ghcr.io
       BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/azureops-backend
@@ -62,17 +90,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
+      # push: false here on purpose -- images are loaded into the local
+      # docker daemon and pushed only after Trivy passes, further down.
+      # cache-from/to: gha replaces the old fully-cold `docker build` on
+      # every run with GitHub Actions' own layer cache.
       - name: Build backend image
-        run: docker build -t azureops-backend:${{ github.sha }} -t ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ./backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          load: true
+          push: false
+          tags: |
+            azureops-backend:${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
       - name: Build frontend image
-        run: docker build -t azureops-frontend:${{ github.sha }} -t ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ./frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          load: true
+          push: false
+          tags: |
+            azureops-frontend:${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
       # Backend: we control every dependency directly (requirements.txt), so
       # CRITICAL+HIGH is a fair, immediately-actionable bar. backend/.trivyignore
       # documents the small number of exceptions (unfixable transitive pins,
       # non-runtime build tooling) with reasons, reviewed periodically.
-      - name: Scan backend image (Trivy)
+      #
+      # Gating and SARIF reporting are deliberately TWO separate trivy-action
+      # invocations, not one step with format: sarif. A single step combining
+      # `format: sarif` with `severity`/`ignore-unfixed`/`exit-code` silently
+      # drops all of those filters -- trivy-action's SARIF path always scans
+      # "with all severities" for Security-tab completeness, so it fails on
+      # anything Trivy has ever flagged (LOW/MEDIUM included), not just the
+      # CRITICAL+HIGH bar this project actually gates on. Confirmed via a
+      # real failed run: the logged command was bare `trivy image <ref>`,
+      # none of the severity/ignorefile/exit-code inputs were even passed.
+      - name: Scan backend image (Trivy) -- gate
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: azureops-backend:${{ github.sha }}
@@ -81,6 +145,28 @@ jobs:
           ignore-unfixed: true
           trivyignores: backend/.trivyignore
 
+      # exit-code: '0' -- this invocation never fails the build; it exists
+      # purely to populate the Security tab. if: always() so it still runs
+      # (and the failure is still visible there) even if the gate above
+      # just failed the job.
+      - name: Scan backend image (Trivy) -- report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: azureops-backend:${{ github.sha }}
+          ignore-unfixed: true
+          trivyignores: backend/.trivyignore
+          exit-code: '0'
+          format: sarif
+          output: trivy-results-backend.sarif
+
+      - name: Upload backend Trivy report
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results-backend.sarif
+          category: trivy-backend
+
       # Frontend: nginx:alpine's OS packages (curl, openssl, libxml2, etc.)
       # produce dozens of HIGH findings that are entirely base-image
       # churn, not our own code, and not exercised by how this container
@@ -88,7 +174,10 @@ jobs:
       # CRITICAL only here; HIGH findings get cleared by periodically
       # bumping the base image tag (already done once this session:
       # nginx:1.27-alpine -> 1.29-alpine), not by blocking every commit.
-      - name: Scan frontend image (Trivy)
+      # if: always() -- otherwise a failed (CVE-gated) backend scan above
+      # skips this step entirely by GitHub Actions' default behavior.
+      - name: Scan frontend image (Trivy) -- gate
+        if: always()
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: azureops-frontend:${{ github.sha }}
@@ -96,11 +185,30 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
 
+      - name: Scan frontend image (Trivy) -- report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: azureops-frontend:${{ github.sha }}
+          ignore-unfixed: true
+          exit-code: '0'
+          format: sarif
+          output: trivy-results-frontend.sarif
+
+      - name: Upload frontend Trivy report
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results-frontend.sarif
+          category: trivy-frontend
+
       # Publish only actual merges to main -- PRs get full validation (test,
       # build, scan) above but never publish an image. GITHUB_TOKEN already
       # has packages:write scope granted above; no separate registry
       # credential needed at all, which is the whole cost/complexity
-      # advantage of ghcr.io over ACR for this project right now.
+      # advantage of ghcr.io over ACR for this project right now. Images
+      # were already built and Trivy-scanned above; this just pushes the
+      # local images docker already has, so it's a cache hit, not a rebuild.
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
@@ -113,34 +221,85 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           docker push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          docker tag ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.BACKEND_IMAGE }}:latest
           docker push ${{ env.BACKEND_IMAGE }}:latest
 
       - name: Push frontend image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           docker push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          docker tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
           docker push ${{ env.FRONTEND_IMAGE }}:latest
+
+  # Deploys the exact scanned+pushed commit SHA to a second namespace
+  # (azureops-copilot-staging) on the SAME cluster -- $0 marginal infra
+  # cost, no new VM. Auto-deploys (the `staging` GitHub Environment has no
+  # required reviewers, unlike `production`) and smoke-tests through the
+  # real public ingress before deploy-production is even allowed to start.
+  deploy-staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: docker-build-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Same az vm run-command pattern as production (Module 7/12) -- the
+      # runner has no direct network path to the cluster's API server, it's
+      # VNet-only. Manifests are curled straight from this exact commit
+      # (raw.githubusercontent.com/.../<sha>/...) rather than relying on a
+      # persistent git clone living on the VM, so staging always applies
+      # precisely what CI just scanned -- no drift, no stale local checkout.
+      - name: Apply staging manifests and deploy the scanned SHA
+        run: |
+          az vm run-command invoke \
+            --resource-group azureops-copilot-rg \
+            --name app-vm1 \
+            --command-id RunShellScript \
+            --scripts "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+              set -euo pipefail
+              RAW=https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/k8s/staging
+              tmpdir=\$(mktemp -d)
+              for f in namespace.yaml qdrant.yaml backend.yaml frontend.yaml; do
+                curl -sfL \"\$RAW/\$f\" -o \"\$tmpdir/\$f\"
+              done
+              kubectl apply -f \"\$tmpdir\"
+              kubectl set image deployment/backend backend=ghcr.io/consciouslake/azureops-backend:${{ github.sha }} -n azureops-copilot-staging
+              kubectl set image deployment/frontend frontend=ghcr.io/consciouslake/azureops-frontend:${{ github.sha }} -n azureops-copilot-staging
+              kubectl rollout status deployment backend -n azureops-copilot-staging --timeout=120s
+              kubectl rollout status deployment frontend -n azureops-copilot-staging --timeout=120s
+              rm -rf \"\$tmpdir\""
+
+      - name: Smoke test staging
+        run: |
+          curl -sf -o /dev/null -w "staging root: HTTP %{http_code}\n" https://staging.devopspk.online/
+          curl -sf -o /dev/null -w "staging health: HTTP %{http_code}\n" https://staging.devopspk.online/health
 
   # OIDC-authenticated Azure login -- no stored client secret anywhere. The
   # App Registration (azureops-copilot-github-oidc) has a Federated Identity
   # Credential trusting ONLY repo:consciouslake/Devops-tut:ref:refs/heads/main,
   # so this token exchange only works from this exact repo's main branch,
-  # not from a fork or any other branch. Originally scoped to just proving
-  # passwordless auth worked (Module 7), since there was no real deployment
-  # target yet -- now also triggers a real rollout restart against the live
-  # k3s cluster (added after Module 12 went live), reusing this same OIDC
-  # identity's existing Contributor role rather than granting anything new.
-  deploy:
+  # not from a fork or any other branch. `needs: deploy-staging` means this
+  # job (and its approval gate) doesn't even become available until the
+  # same commit has already deployed cleanly to staging and passed its
+  # smoke test -- production never sees a commit staging hasn't verified.
+  deploy-production:
     runs-on: ubuntu-latest
-    needs: docker-build-scan
+    timeout-minutes: 15
+    needs: deploy-staging
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     # A GitHub Environment gate -- "production" requires a manual approval
     # before this job's steps run at all, even though everything upstream
-    # (test, scan, publish) already passed. This is Continuous Delivery, not
-    # Continuous Deployment (see Chapter 1's CI-vs-CD framing): a human
-    # decides when the verified, published artifact actually gets acted on.
+    # (test, scan, publish, staging deploy+smoke test) already passed. This
+    # is Continuous Delivery, not Continuous Deployment (see Chapter 1's
+    # CI-vs-CD framing): a human decides when the verified, published
+    # artifact actually gets acted on.
     environment: production
     permissions:
       id-token: write
@@ -157,30 +316,61 @@ jobs:
           az account show --query "{subscription:name, user:user.name, authType:user.type}" -o table
           az resource list --resource-group azureops-copilot-rg --query "sort_by([], &name)[].{name:name, type:type}" -o table
 
-      # The app runs on the self-managed k3s cluster (Module 8), not an Azure
-      # PaaS deploy target -- so "deploy" here means telling the cluster to
-      # pull the freshly-published :latest images. There's no direct network
-      # path from a GitHub-hosted runner to the cluster's API server (it's
-      # only reachable inside the VNet), so this reuses the same az vm
-      # run-command pattern used throughout this project's own manual
-      # deploys instead of opening the API server to the internet. The OIDC
-      # identity's Contributor role (flagged as broader than it needed to be
-      # in Module 11's RBAC audit, deliberately left as-is for exactly this
-      # kind of future automation) already covers the VM run-command action
-      # -- no new permission grant was needed to add this step.
-      - name: Redeploy live cluster (pull fresh images)
+      # Deploys the exact SHA staging already verified, by `kubectl set
+      # image` rather than `rollout restart` against the mutable `:latest`
+      # tag -- "promote to production" now means "run the literal image
+      # staging just smoke-tested," not "restart and hope the node re-pulls
+      # whatever :latest currently points to." If the health check below
+      # fails, this same SHA is what the rollback step's `kubectl rollout
+      # undo` reverts FROM, back to whatever the previous ReplicaSet ran.
+      #
+      # The app runs on the self-managed k3s cluster (Module 8), not an
+      # Azure PaaS deploy target, and there's no direct network path from a
+      # GitHub-hosted runner to the cluster's API server (VNet-only), so
+      # this reuses the same az vm run-command pattern used throughout this
+      # project's own manual deploys. The OIDC identity's Contributor role
+      # (flagged as broader than it needed to be in Module 11's RBAC audit,
+      # deliberately left as-is for exactly this kind of future automation)
+      # already covers the VM run-command action.
+      - name: Redeploy live cluster (exact scanned SHA)
         run: |
           az vm run-command invoke \
             --resource-group azureops-copilot-rg \
             --name app-vm1 \
             --command-id RunShellScript \
             --scripts "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-              kubectl rollout restart deployment backend -n azureops-copilot
-              kubectl rollout restart deployment frontend -n azureops-copilot
+              kubectl set image deployment/backend backend=ghcr.io/consciouslake/azureops-backend:${{ github.sha }} -n azureops-copilot
+              kubectl set image deployment/frontend frontend=ghcr.io/consciouslake/azureops-frontend:${{ github.sha }} -n azureops-copilot
               kubectl rollout status deployment backend -n azureops-copilot --timeout=120s
               kubectl rollout status deployment frontend -n azureops-copilot --timeout=120s"
 
+      # Runs directly on the GitHub runner, not via az vm run-command --
+      # the site is public, this is exactly the request a real user makes.
       - name: Verify the live app is actually healthy after redeploy
         run: |
           curl -sf -o /dev/null -w "HTTPS root: HTTP %{http_code}\n" https://devopspk.online/
           curl -sf -o /dev/null -w "health: HTTP %{http_code}\n" https://devopspk.online/health
+
+      # Automated rollback: only runs if the health check above failed.
+      # `kubectl rollout undo` needs cluster access, so this goes back
+      # through az vm run-command like the deploy step. Re-verifies health
+      # against the now-reverted release, then exits non-zero regardless --
+      # the job still shows red (a caught bad deploy should be loud) but
+      # production is left on the last-good image, not the broken one.
+      - name: Roll back automatically (health check failed)
+        if: failure()
+        run: |
+          az vm run-command invoke \
+            --resource-group azureops-copilot-rg \
+            --name app-vm1 \
+            --command-id RunShellScript \
+            --scripts "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+              echo '[deploy] health check failed -- rolling back to the previous release'
+              kubectl rollout undo deployment backend -n azureops-copilot
+              kubectl rollout undo deployment frontend -n azureops-copilot
+              kubectl rollout status deployment backend -n azureops-copilot --timeout=120s
+              kubectl rollout status deployment frontend -n azureops-copilot --timeout=120s"
+          curl -sf -o /dev/null -w "post-rollback root: HTTP %{http_code}\n" https://devopspk.online/
+          curl -sf -o /dev/null -w "post-rollback health: HTTP %{http_code}\n" https://devopspk.online/health
+          echo "[deploy] rolled back -- failing this job so the bad deploy is visible"
+          exit 1

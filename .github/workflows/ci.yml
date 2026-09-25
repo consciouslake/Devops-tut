@@ -245,6 +245,10 @@ jobs:
       # answer "were we ever affected by CVE-X" retroactively without
       # re-scanning old images, and is what "supply-chain attestation"
       # concretely means at this scale.
+      # upload-artifact: false -- sbom-action uploads its own artifact by
+      # default (auto-named after the image ref), which duplicated the SBOM
+      # under two different artifact names for no benefit. The explicit
+      # upload-artifact step below is the only one now.
       - name: Generate SBOM
         if: always()
         uses: anchore/sbom-action@v0
@@ -252,6 +256,7 @@ jobs:
           image: ${{ env.LOCAL_TAG }}
           format: spdx-json
           output-file: sbom-${{ matrix.name }}.spdx.json
+          upload-artifact: false
 
       - name: Upload SBOM artifact
         if: always()

@@ -1373,21 +1373,25 @@ export const modules: Module[] = [
         id: 'artifacts-caching-matrices',
         title: 'Artifacts, caching, matrices',
         concept:
-          "An artifact is a file (or set of files) produced by one job and made available to download or pass to another job — e.g. a built frontend `dist/` folder, or a compiled binary. Caching (like `actions/setup-python`'s built-in pip cache, or `actions/cache` generally) persists dependency downloads between runs so `pip install`/`npm install` don't re-download everything from scratch every single time — a major speed win once a project's dependency list grows. A matrix runs the same job multiple times with different parameter combinations (e.g. Python 3.10/3.11/3.12) in parallel, catching version-specific breakage without writing the job three times.",
+          "An artifact is a file (or set of files) produced by one job and made available to download or pass to another job — e.g. a built frontend `dist/` folder, or a compiled binary. Caching (like `actions/setup-python`'s built-in pip cache, or `actions/cache` generally) persists dependency downloads between runs so `pip install`/`npm install` don't re-download everything from scratch every single time — a major speed win once a project's dependency list grows. A matrix runs the same job multiple times with different parameter combinations (e.g. Python 3.10/3.11/3.12, or — as built here — one image name per leg) in parallel, catching version-specific breakage or just parallelizing independent work without writing the job N times.",
         whyDevops:
-          "None of this project's current CI uses caching or matrices yet — a real, honest gap worth naming rather than pretending it's optimized. Small now (fast installs, one Python version), but the exact kind of thing that becomes a real cost/speed problem as a project grows and gets ignored because it \"works fine.\"",
+          "All three are real in this project now, added in a later optimization pass, not left as an honest gap: pip/npm dependency caching, a backend/frontend build-matrix so the two Docker images build and scan in parallel instead of sequentially in one job, and a separately time-keyed cache for Trivy's own ~117MB vulnerability database, which was being re-downloaded on every one of the 4 scan steps per run before this.",
         handsOn: [
-          { label: 'What adding pip caching would look like (not yet done)', code: "- uses: actions/setup-python@v5\n  with:\n    python-version: '3.11'\n    cache: 'pip'   # <- not currently in this project's ci.yml" },
+          { label: 'Dependency caching, real, ci.yml', code: "- uses: actions/setup-python@v5\n  with:\n    python-version: '3.11'\n    cache: 'pip'\n    cache-dependency-path: backend/requirements.txt" },
+          { label: 'Build matrix instead of one job doing both images sequentially', code: "strategy:\n  fail-fast: false\n  matrix:\n    include:\n      - name: backend\n        context: ./backend\n        severity: CRITICAL,HIGH\n        trivyignores: backend/.trivyignore\n      - name: frontend\n        context: ./frontend\n        severity: CRITICAL\n        trivyignores: ''\n# every step below references ${{ matrix.name }} / ${{ matrix.context }} / ${{ matrix.severity }}" },
+          { label: "Time-keyed cache for a tool's own database, not just app dependencies", code: '- run: echo "date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"\n  id: trivy-date\n- uses: actions/cache@v4\n  with:\n    path: .cache/trivy\n    key: trivy-db-${{ steps.trivy-date.outputs.date }}\n    restore-keys: trivy-db-\n# rotates daily so the DB stays fresh, reused across every run within the same day' },
         ],
         troubleshooting: [
           'CI feels slow and nobody knows why → check whether dependency installation is being cached at all; re-downloading the same packages on every single run is a common, invisible source of wasted minutes.',
+          "A security scanner's own vulnerability database counts as something worth caching too, not just application dependencies → Trivy was re-fetching its ~117MB DB on every scan step (this project runs 4: gate + report, per image) until a daily-rotating cache key was added — the fix isn't \"never re-download,\" it's \"don't re-download more often than the data actually changes.\"",
         ],
         interview: [
           'What\'s the difference between an artifact and a cache in GitHub Actions?',
           'When would a build matrix be worth the added complexity?',
+          "How do you decide a cache key's rotation frequency for something like a vulnerability database, where the data does need to go stale eventually?",
         ],
         azureConnection:
-          "A Docker image (Chapter 7) is conceptually an artifact too — the thing one job (build) produces that a later job (push/deploy) consumes, just using a container registry instead of GitHub's own artifact storage.",
+          "A Docker image (Chapter 7) is conceptually an artifact too — the thing one job (build) produces that a later job (push/deploy) consumes, just using a container registry instead of GitHub's own artifact storage. Also real now: an SPDX SBOM is generated per image and uploaded as a genuine GitHub Actions artifact (`actions/upload-artifact`) — a free, self-contained record of exactly what's inside each shipped image, useful for answering \"were we ever affected by CVE-X\" retroactively without re-scanning old images.",
       },
       {
         id: 'secrets-environments',
@@ -1557,6 +1561,74 @@ export const modules: Module[] = [
         ],
         azureConnection:
           'Built and verified as a real, live sequence in this session: the `production` environment was created but initially had no protection rules (confirmed via the GitHub UI, not assumed), fixed by enabling Required reviewers, which then genuinely broke OIDC auth with a new subject-format mismatch (`...{:environment:production}` vs. the existing `...{:ref:refs/heads/main}` credential) — fixed with a second Federated Credential rather than replacing the first, so both job shapes keep working. The final real run showed a genuine pause (`waiting for review`), a real approval click, and `deploy` succeeding only after that human decision — the complete CD-with-a-gate loop, not just the YAML for one.',
+      },
+      {
+        id: 'staging-before-production',
+        title: 'A real staging tier, on the same cluster, before production',
+        concept:
+          "Chapter 11 built a real approval gate, but everything upstream of it went straight from build/scan to \"waiting for a human.\" A proper Continuous Delivery pipeline puts a real deployed-and-verified environment in between: deploy the exact scanned commit to staging first, smoke-test it through its own real public endpoint, and only THEN make the production approval gate available at all (`deploy-production` gets `needs: deploy-staging`). Staging doesn't need its own VM — it's a second Kubernetes namespace (`azureops-copilot-staging`) on the exact same 3-node cluster, reusing compute that's already paid for, with its own trimmed-down replica counts and no WAF (a production-hardening concern, not needed for a smoke-test target).",
+        whyDevops:
+          "This is the single biggest gap a standard CI/CD checklist surfaces once you already have build/test/scan/deploy working: without a staging stage, the very FIRST real-traffic test of a change is a production user's request. A staging deploy with a real smoke test catches a broken deploy before a human even has to make the approval decision — the approver is now approving something already proven to run, not just something that passed static checks.",
+        handsOn: [
+          { label: 'The causal chain that makes staging a real gate, not just a label', code: '  deploy-staging:\n    needs: docker-build-scan\n    environment: staging        # no required reviewers -- auto-deploys\n    steps:\n      - # deploy the exact ${{ github.sha }} image to azureops-copilot-staging\n      - # curl -sf https://staging.devopspk.online/ and /health -- if either\n        #   fails, this job fails, and nothing downstream can run\n\n  deploy-production:\n    needs: deploy-staging        # <- production literally cannot start\n    environment: production      #    until staging deployed AND passed' },
+        ],
+        troubleshooting: [
+          'Deploying by exact commit SHA, not `:latest`, is what makes "staging verified it" mean anything → if staging deployed `:latest` and production also deployed `:latest`, a THIRD commit could land in between the two deploys and get published to `:latest` before production\'s job runs — production would then deploy something staging never actually tested. `kubectl set image ...:${{ github.sha }}` in both jobs closes that gap.',
+          'A staging namespace still needs the same startup dependencies as production (Key Vault access via Managed Identity, in this project\'s case) → staging\'s backend Deployment keeps the identical `nodeSelector: app-vm1` constraint production uses, for the same reason: only that node\'s Managed Identity has the Key Vault role the app needs at boot.',
+        ],
+        interview: [
+          'Why deploy staging and production from the exact same commit SHA instead of letting each pull whatever is newest?',
+          'What real problem does a staging smoke test catch that a passing test suite and a clean vulnerability scan do not?',
+          'Why might a team put staging on the same cluster as production instead of fully separate infrastructure, and what do they give up by doing that?',
+        ],
+        azureConnection:
+          'Built for real this session: `k8s/staging/` (namespace, Qdrant, backend, frontend — no WAF), a second Traefik route/SAN on the existing `ingress-tls-domain.yaml` IngressRoute (deliberately reusing the one cert request rather than a second IngressRoute — Module 12 already hit a real ACME race from two concurrent cert requests through the same resolver), a `staging` DNS A record, and a `staging` GitHub Environment. First deploy attempt failed with the exact class of OIDC subject-mismatch bug Chapter 11 documented for `environment:production` — `environment:staging` needed its own, third Federated Credential, confirmed from the real failed run\'s `AADSTS700213` error before creating it.',
+      },
+      {
+        id: 'automated-rollback',
+        title: 'Automated rollback, for real',
+        concept:
+          "Chapter 11's rollback strategy was conceptual: SHA-tagged images make \"go back to a known-good version\" possible. This chapter makes it automatic. The production deploy job now checks real health (`curl -sf` against `/` and `/health` on the live domain) immediately after redeploying; if that check fails, a separate step with `if: failure()` triggers `kubectl rollout undo` for both Deployments, re-verifies health against the now-reverted release, and THEN exits non-zero — the job still shows red (a caught bad deploy should be loud, not silent), but production itself is left on the last-good image, not the one that just failed its own health check.",
+        whyDevops:
+          "A rollback strategy that exists only as a runbook (\"if it breaks, someone runs `kubectl rollout undo`\") depends entirely on a human noticing fast enough. An automatic one closes that window to roughly however long the health check itself takes to fail — no page, no manual SSH, no window where a broken deploy silently serves real users while someone gets paged.",
+        handsOn: [
+          { label: 'The three-step shape: deploy, verify, roll back on failure', code: '- name: Redeploy live cluster (exact scanned SHA)\n  run: kubectl set image deployment/backend ... -n azureops-copilot\n\n- name: Verify the live app is actually healthy after redeploy\n  run: |\n    curl -sf -o /dev/null -w "%{http_code}\\n" https://devopspk.online/\n    curl -sf -o /dev/null -w "%{http_code}\\n" https://devopspk.online/health\n\n- name: Roll back automatically (health check failed)\n  if: failure()   # <- only runs if the step above failed\n  run: |\n    kubectl rollout undo deployment backend -n azureops-copilot\n    kubectl rollout undo deployment frontend -n azureops-copilot\n    # re-verify, then exit 1 regardless -- a caught bad deploy stays visible' },
+        ],
+        troubleshooting: [
+          '`if: failure()` with no argument checks whether ANY previous step in the SAME job failed, not just the immediately preceding one → this is exactly the behavior wanted here (only the health check step is expected to fail), but it\'s worth knowing precisely, since a step earlier in the same job failing for an unrelated reason would also trigger it.',
+          '`kubectl rollout undo` needs real cluster access, same as the deploy step — it can\'t run directly on the GitHub-hosted runner (no network path to the API server), so the rollback step goes back through the same `az vm run-command` pattern as the deploy step, while the health CHECK itself runs directly on the runner since the site is public.',
+          'Kubernetes\' own rollout history has a limited depth (`revisionHistoryLimit`, default 10) → `rollout undo` walks back exactly one ReplicaSet; it is not the same as "redeploy this specific known-good SHA from three days ago" once more than a handful of deploys have happened since.',
+        ],
+        interview: [
+          'Walk through what happens, step by step, if a production deploy\'s health check fails in this pipeline.',
+          'Why does the rollback step still exit non-zero even after successfully reverting to the last-good release?',
+          'What\'s the difference between this reactive rollback and a proactive canary deployment, and what would it take to build the latter here?',
+        ],
+        azureConnection:
+          'Real, live in `.github/workflows/ci.yml`\'s `deploy-production` job. Not yet built: progressive delivery (Argo Rollouts/Flagger shifting a small percentage of traffic first and auto-promoting/aborting on live metrics) — the natural next step past reactive rollback, and genuinely reachable here since Traefik (already the ingress controller) supports weighted routing without new infrastructure.',
+      },
+      {
+        id: 'trivy-sarif-severity-bug',
+        title: 'A real bug: a security gate that silently stopped gating on severity',
+        concept:
+          "Adding SARIF output (so Trivy findings persist to GitHub's Security tab, not just ephemeral job logs) looked like a small addition: `format: sarif, output: results.sarif` alongside the existing `severity`, `ignore-unfixed`, `exit-code`, and `trivyignores` inputs on the same `trivy-action` step. The very next real push failed — not on a new CVE, but because `trivy-action` has an undocumented-in-practice behavior: setting `format: sarif` switches it into a \"scan with all severities, for Security-tab completeness\" code path that silently drops `severity`/`ignore-unfixed`/`exit-code`/`trivyignores` entirely. The step that used to gate on CRITICAL+HIGH-only started failing on anything Trivy had ever flagged.",
+        whyDevops:
+          "This is exactly the failure mode a security gate must never have: quietly becoming stricter (or looser) than intended without anyone changing the actual policy. A gate that fails unpredictably gets bypassed or disabled by frustrated engineers, which is worse than no gate. Verifying this LOCALLY — rebuilding the exact image with `--no-cache` and running the raw `trivy` binary with the exact same flags — matters as much as the eventual fix: it proved the image itself was clean and the bug was in how the action combined its inputs, not a real new vulnerability.",
+        handsOn: [
+          { label: "The tell, straight from the real failed run's log", code: 'Running Trivy with options: trivy image azureops-backend:b3b0381...\n# ^ no --severity, no --ignore-unfixed, no --exit-code, no --ignorefile --\n#   NONE of the configured inputs were actually passed to the command' },
+          { label: 'The fix: two separate invocations, not one step doing both jobs', code: "- name: Scan (Trivy) -- gate\n  uses: aquasecurity/trivy-action@v0.36.0\n  with:\n    severity: CRITICAL,HIGH\n    exit-code: '1'          # this one can fail the build\n    ignore-unfixed: true\n    trivyignores: backend/.trivyignore\n    # no format/output here at all\n\n- name: Scan (Trivy) -- report\n  if: always()\n  uses: aquasecurity/trivy-action@v0.36.0\n  with:\n    exit-code: '0'          # this one can NEVER fail the build\n    format: sarif\n    output: results.sarif" },
+        ],
+        troubleshooting: [
+          'A CI step\'s logged/reported configuration doesn\'t match what actually ran → check the tool\'s own printed invocation line, not just the YAML that was written. The YAML `with:` block is what you asked for; the tool\'s own log line is what it actually did with that request — this project\'s real failure was found by comparing the two and finding them different.',
+          'A local reproduction attempt that passes clean while CI fails on the same flags is itself a real clue, not a dead end → it means the discrepancy is in HOW the tool is being invoked (an action wrapper, a build cache, an environment difference), not in the artifact being scanned. Chasing that gap down (build fresh with `--no-cache` to rule out a stale local image first, then reproduce the exact CLI invocation) is what found the real cause here.',
+        ],
+        interview: [
+          'Describe a time a CI gate failed and the fix was in the pipeline configuration, not the code it was checking. How did you tell the difference?',
+          'Why is a security gate that fails unpredictably arguably worse than having no gate at all?',
+          'What\'s the value of reproducing a CI failure locally before changing the pipeline, versus just editing the YAML until the build goes green?',
+        ],
+        azureConnection:
+          "Fixed for real in `.github/workflows/ci.yml`: every image now gets two separate `trivy-action` invocations — an unchanged, severity-gated \"gate\" scan that can fail the build exactly as it always did, and a permissive \"report\" scan (`exit-code: '0'`, always runs) whose only job is populating the Security tab. Verified locally first: a freshly `--no-cache` rebuilt image scanned with the raw `trivy` binary and the exact intended flags came back clean, confirming the image was never the problem.",
       },
     ],
   },

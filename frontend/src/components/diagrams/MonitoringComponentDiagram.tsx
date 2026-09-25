@@ -1,4 +1,4 @@
-import { DCOLORS, DiagramFrame, Node, DbNode, GroupBox, Arrow, ArrowMarkerDefs } from './DiagramShared'
+import { DCOLORS, DiagramFrame, Node, DbNode, Arrow, ArrowMarkerDefs } from './DiagramShared'
 
 export function MonitoringComponentDiagram() {
   return (

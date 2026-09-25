@@ -1,0 +1,3 @@
+# Build-time tooling only -- not needed by the running app, so kept
+# separate from requirements.txt (which the container actually ships).
+ruff==0.16.9

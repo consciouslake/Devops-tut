@@ -15,11 +15,27 @@
 # exact scanned commit SHA (not the mutable `:latest` tag), and a failed
 # production health check now triggers an automatic `kubectl rollout undo`
 # instead of just going red while the broken image stays live.
+#
+# Second hardening pass: lint jobs added (ruff/eslint -- previously only
+# `npm run build` ran, which proves the frontend compiles but catches
+# nothing else), docker-build-scan split into a backend/frontend matrix so
+# the two images build and scan in parallel instead of sequentially in one
+# job, the Trivy vulnerability DB is cached (it was re-downloading ~117MB
+# on every single scan step before), an SBOM is generated per image, and
+# docs-only commits no longer trigger the full pipeline.
 name: CI
 
 on:
   push:
+    paths-ignore:
+      - '**.md'
+      - 'LEARNING_LOG.md'
+      - 'PLAN.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LEARNING_LOG.md'
+      - 'PLAN.md'
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -38,6 +54,42 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  lint-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+
+  lint-frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm install
+      - run: npm run lint
 
   backend:
     runs-on: ubuntu-latest
@@ -75,18 +127,45 @@ jobs:
       - run: npm install
       - run: npm run build
 
+  # backend and frontend build+scan as two parallel matrix jobs instead of
+  # one job running both sequentially -- real wall-clock time saved, not
+  # just a cosmetic split. Per-image gate settings (severity bar,
+  # .trivyignore) come from the matrix entry below.
   docker-build-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [backend, frontend]
+    needs: [lint-backend, lint-frontend, backend, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Backend: we control every dependency directly (requirements.txt),
+          # so CRITICAL+HIGH is a fair, immediately-actionable bar.
+          # backend/.trivyignore documents the small number of exceptions
+          # (unfixable transitive pins, non-runtime build tooling) with
+          # reasons, reviewed periodically.
+          - name: backend
+            context: ./backend
+            severity: CRITICAL,HIGH
+            trivyignores: backend/.trivyignore
+          # Frontend: nginx:alpine's OS packages (curl, openssl, libxml2,
+          # etc.) produce dozens of HIGH findings that are entirely
+          # base-image churn, not our own code, and not exercised by how
+          # this container actually runs (static file serving + reverse
+          # proxy). Gating on CRITICAL only; HIGH findings get cleared by
+          # periodically bumping the base image tag, not by blocking every
+          # commit.
+          - name: frontend
+            context: ./frontend
+            severity: CRITICAL
+            trivyignores: ''
     permissions:
       contents: read
       packages: write
       security-events: write
     env:
-      REGISTRY: ghcr.io
-      BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/azureops-backend
-      FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/azureops-frontend
+      IMAGE: ghcr.io/${{ github.repository_owner }}/azureops-${{ matrix.name }}
+      LOCAL_TAG: azureops-${{ matrix.name }}:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,119 +175,103 @@ jobs:
       # docker daemon and pushed only after Trivy passes, further down.
       # cache-from/to: gha replaces the old fully-cold `docker build` on
       # every run with GitHub Actions' own layer cache.
-      - name: Build backend image
+      - name: Build ${{ matrix.name }} image
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
+          context: ${{ matrix.context }}
           load: true
           push: false
           tags: |
-            azureops-backend:${{ github.sha }}
-            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-            ${{ env.BACKEND_IMAGE }}:latest
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=max,scope=backend
+            ${{ env.LOCAL_TAG }}
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
-      - name: Build frontend image
-        uses: docker/build-push-action@v6
+      # Rotates daily so the DB stays fresh, but reused across every run
+      # within the same day instead of re-downloading ~117MB per scan step
+      # (this job runs two scan steps per image -- gate + report -- so
+      # without this the DB was fetched 4 times on every single push).
+      - name: Get date for Trivy DB cache key
+        id: trivy-date
+        run: echo "date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability DB
+        uses: actions/cache@v4
         with:
-          context: ./frontend
-          load: true
-          push: false
-          tags: |
-            azureops-frontend:${{ github.sha }}
-            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-            ${{ env.FRONTEND_IMAGE }}:latest
-          cache-from: type=gha,scope=frontend
-          cache-to: type=gha,mode=max,scope=frontend
+          path: .cache/trivy
+          key: trivy-db-${{ steps.trivy-date.outputs.date }}
+          restore-keys: trivy-db-
 
-      # Backend: we control every dependency directly (requirements.txt), so
-      # CRITICAL+HIGH is a fair, immediately-actionable bar. backend/.trivyignore
-      # documents the small number of exceptions (unfixable transitive pins,
-      # non-runtime build tooling) with reasons, reviewed periodically.
-      #
-      # Gating and SARIF reporting are deliberately TWO separate trivy-action
-      # invocations, not one step with format: sarif. A single step combining
-      # `format: sarif` with `severity`/`ignore-unfixed`/`exit-code` silently
-      # drops all of those filters -- trivy-action's SARIF path always scans
-      # "with all severities" for Security-tab completeness, so it fails on
-      # anything Trivy has ever flagged (LOW/MEDIUM included), not just the
-      # CRITICAL+HIGH bar this project actually gates on. Confirmed via a
-      # real failed run: the logged command was bare `trivy image <ref>`,
-      # none of the severity/ignorefile/exit-code inputs were even passed.
-      - name: Scan backend image (Trivy) -- gate
+      # Gating and SARIF reporting are deliberately TWO separate
+      # trivy-action invocations, not one step with format: sarif. A single
+      # step combining `format: sarif` with `severity`/`ignore-unfixed`/
+      # `exit-code` silently drops all of those filters -- trivy-action's
+      # SARIF path always scans "with all severities" for Security-tab
+      # completeness, so it fails on anything Trivy has ever flagged
+      # (LOW/MEDIUM included), not just the severity bar this project
+      # actually gates on. Confirmed via a real failed run: the logged
+      # command was bare `trivy image <ref>`, none of the
+      # severity/ignorefile/exit-code inputs were even passed.
+      - name: Scan ${{ matrix.name }} image (Trivy) -- gate
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: azureops-backend:${{ github.sha }}
-          severity: CRITICAL,HIGH
+          image-ref: ${{ env.LOCAL_TAG }}
+          severity: ${{ matrix.severity }}
           exit-code: '1'
           ignore-unfixed: true
-          trivyignores: backend/.trivyignore
+          trivyignores: ${{ matrix.trivyignores }}
 
       # exit-code: '0' -- this invocation never fails the build; it exists
       # purely to populate the Security tab. if: always() so it still runs
       # (and the failure is still visible there) even if the gate above
       # just failed the job.
-      - name: Scan backend image (Trivy) -- report
+      - name: Scan ${{ matrix.name }} image (Trivy) -- report
         if: always()
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: azureops-backend:${{ github.sha }}
+          image-ref: ${{ env.LOCAL_TAG }}
           ignore-unfixed: true
-          trivyignores: backend/.trivyignore
+          trivyignores: ${{ matrix.trivyignores }}
           exit-code: '0'
           format: sarif
-          output: trivy-results-backend.sarif
+          output: trivy-results-${{ matrix.name }}.sarif
 
-      - name: Upload backend Trivy report
+      - name: Upload ${{ matrix.name }} Trivy report
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: trivy-results-backend.sarif
-          category: trivy-backend
+          sarif_file: trivy-results-${{ matrix.name }}.sarif
+          category: trivy-${{ matrix.name }}
 
-      # Frontend: nginx:alpine's OS packages (curl, openssl, libxml2, etc.)
-      # produce dozens of HIGH findings that are entirely base-image
-      # churn, not our own code, and not exercised by how this container
-      # actually runs (static file serving + reverse proxy). Gating on
-      # CRITICAL only here; HIGH findings get cleared by periodically
-      # bumping the base image tag (already done once this session:
-      # nginx:1.27-alpine -> 1.29-alpine), not by blocking every commit.
-      # if: always() -- otherwise a failed (CVE-gated) backend scan above
-      # skips this step entirely by GitHub Actions' default behavior.
-      - name: Scan frontend image (Trivy) -- gate
+      # Free, self-contained record of exactly what's in each shipped
+      # image (every OS + language package and its version) -- lets you
+      # answer "were we ever affected by CVE-X" retroactively without
+      # re-scanning old images, and is what "supply-chain attestation"
+      # concretely means at this scale.
+      - name: Generate SBOM
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: anchore/sbom-action@v0
         with:
-          image-ref: azureops-frontend:${{ github.sha }}
-          severity: CRITICAL
-          exit-code: '1'
-          ignore-unfixed: true
+          image: ${{ env.LOCAL_TAG }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.name }}.spdx.json
 
-      - name: Scan frontend image (Trivy) -- report
+      - name: Upload SBOM artifact
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: actions/upload-artifact@v4
         with:
-          image-ref: azureops-frontend:${{ github.sha }}
-          ignore-unfixed: true
-          exit-code: '0'
-          format: sarif
-          output: trivy-results-frontend.sarif
-
-      - name: Upload frontend Trivy report
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results-frontend.sarif
-          category: trivy-frontend
+          name: sbom-${{ matrix.name }}
+          path: sbom-${{ matrix.name }}.spdx.json
 
       # Publish only actual merges to main -- PRs get full validation (test,
-      # build, scan) above but never publish an image. GITHUB_TOKEN already
-      # has packages:write scope granted above; no separate registry
-      # credential needed at all, which is the whole cost/complexity
-      # advantage of ghcr.io over ACR for this project right now. Images
-      # were already built and Trivy-scanned above; this just pushes the
-      # local images docker already has, so it's a cache hit, not a rebuild.
+      # lint, build, scan) above but never publish an image. GITHUB_TOKEN
+      # already has packages:write scope granted above; no separate
+      # registry credential needed at all, which is the whole cost/
+      # complexity advantage of ghcr.io over ACR for this project right
+      # now. Image was already built and Trivy-scanned above; this just
+      # pushes the local image docker already has, so it's a cache hit,
+      # not a rebuild.
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
@@ -217,17 +280,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push backend image
+      - name: Push ${{ matrix.name }} image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          docker push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          docker push ${{ env.BACKEND_IMAGE }}:latest
-
-      - name: Push frontend image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          docker push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          docker push ${{ env.FRONTEND_IMAGE }}:latest
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
 
   # Deploys the exact scanned+pushed commit SHA to a second namespace
   # (azureops-copilot-staging) on the SAME cluster -- $0 marginal infra

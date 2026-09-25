@@ -1,0 +1,10 @@
+# Explicit config -- without this, `ruff check` falls back to whatever
+# rule set ships as ruff's current default, which has changed across
+# versions. line-length matches this codebase's actual existing style
+# (longest real line is 107 chars) rather than Black's 88-char default,
+# so linting doesn't demand reformatting working code for no functional
+# reason.
+line-length = 110
+
+[lint]
+select = ["E", "F"]

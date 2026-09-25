@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: azureops-copilot-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: backend }
+  template:
+    metadata:
+      labels: { app: backend }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: app-vm1
+      containers:
+      - name: backend
+        image: ghcr.io/consciouslake/azureops-backend:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: QDRANT_HOST
+          value: qdrant
+        - name: QDRANT_PORT
+          value: "6333"
+        - name: AZURE_KEY_VAULT_NAME
+          value: azureops-copilot-kv
+        - name: OTEL_ENABLED
+          value: "true"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://tempo.azureops-copilot.svc.cluster.local:4317"
+        resources:
+          requests: { cpu: 25m, memory: 96Mi }
+          limits: { cpu: 250m, memory: 256Mi }
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: azureops-copilot-staging
+spec:
+  selector: { app: backend }
+  ports:
+  - port: 8000
+    targetPort: 8000

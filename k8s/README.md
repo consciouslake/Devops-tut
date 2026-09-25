@@ -13,8 +13,15 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 kubectl apply -f namespace.yaml -f qdrant.yaml -f tempo.yaml -f backend.yaml -f frontend.yaml -f waf.yaml -f ingress.yaml
 kubectl apply -f tempo-grafana-datasource.yaml   # adds Tempo to the monitoring namespace's Grafana
 kubectl apply -f traefik-tls-config.yaml         # HelmChartConfig, cluster-wide (kube-system)
-kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online + www, one SAN cert via Let's Encrypt
+kubectl apply -f ingress-tls-domain.yaml         # IngressRoute: devopspk.online + www + staging, one SAN cert via Let's Encrypt
 ```
+
+**Staging** (`k8s/staging/`, first-time-only manual bootstrap — namespace,
+PVC and Service objects, same as production above):
+```bash
+kubectl apply -f staging/namespace.yaml -f staging/qdrant.yaml -f staging/backend.yaml -f staging/frontend.yaml
+```
+After that, CI owns staging entirely — see "CI/CD" below.
 
 ## Cluster & workload commands
 
@@ -70,17 +77,38 @@ kubectl get secret <name> -n <namespace> -o jsonpath='{.data.KEY}' | base64 -d  
 
 - **Images**: `ghcr.io/consciouslake/azureops-backend:latest` and
   `azureops-frontend:latest`, built and published by `.github/workflows/ci.yml`
-  on every merge to `main`. Both packages must be public (no image pull
-  secret is configured) — see Package settings on GitHub.
-- **Auto-redeploy**: `ci.yml`'s `deploy` job (after its manual approval gate)
-  now also runs `kubectl rollout restart` for `backend` and `frontend` against
-  the live cluster via `az vm run-command`, then checks `/health` and `/`
-  really respond afterward. Added after a real gap was hit: publishing a
-  fresh `:latest` image doesn't make a running pod pull it — Module 12's
-  curriculum content sat stale in production until someone noticed and ran
-  the restart by hand. No new Azure permission was needed; the OIDC
-  identity's existing `Contributor` role (flagged, deliberately left as-is,
-  in Module 11's RBAC audit) already covers `az vm run-command`.
+  on every merge to `main` (also pushed tagged by exact commit SHA — that
+  SHA tag, not `:latest`, is what actually gets deployed; see below). Both
+  packages must be public (no image pull secret is configured) — see
+  Package settings on GitHub.
+- **CI/CD — staging before production, deploy by SHA, automated rollback**:
+  a merge to `main` no longer goes straight to production. `ci.yml` now
+  runs `deploy-staging` (auto, no approval — the `staging` GitHub
+  Environment has no required reviewers) against the
+  `azureops-copilot-staging` namespace on this same cluster, smoke-tests it
+  through `https://staging.devopspk.online`, and only THEN makes
+  `deploy-production`'s manual-approval gate available
+  (`needs: deploy-staging`). Both deploy jobs use `kubectl set image` to the
+  exact `${{ github.sha }}`-tagged image, not `kubectl rollout restart`
+  against the mutable `:latest` tag — "promote to production" means "run
+  the literal image staging just verified," not "restart and hope the node
+  re-pulls whatever `:latest` currently points to." Added after a real gap
+  was hit: publishing a fresh `:latest` image doesn't make a running pod
+  pull it — Module 12's curriculum content sat stale in production until
+  someone noticed and ran a restart by hand; the fix is deploying by SHA,
+  not relying on tag mutation at all. If production's post-deploy health
+  check (`/`, `/health`) fails, a rollback step automatically runs
+  `kubectl rollout undo` for both Deployments, re-checks health, and fails
+  the job loudly either way — a caught bad deploy leaves production on the
+  last-good image instead of the broken one. Same `az vm run-command`
+  pattern throughout (no direct network path from a GitHub-hosted runner to
+  the cluster's API server, it's VNet-only); no new Azure permission was
+  needed, the OIDC identity's existing `Contributor` role (flagged,
+  deliberately left as-is, in Module 11's RBAC audit) already covers it.
+  Staging's manifests are fetched fresh from `raw.githubusercontent.com` at
+  the exact deploying commit rather than a persistent git clone living on
+  the VM, so there's no drift between what's in git and what staging
+  applies.
 - **Secrets**: the backend pod sets `AZURE_KEY_VAULT_NAME=azureops-copilot-kv`
   and fetches `GEMINI_API_KEY`/`JWT_SECRET` from Key Vault via Managed
   Identity at startup (Module 11) — no secret is stored in these manifests
